@@ -1022,11 +1022,26 @@ class Scope(CacheInstances):
         return as_mapper(self.reads_gen(), key=lambda i: i.function)
 
     @cached_property
+    def read_targets(self):
+        """The Functions read within the Scope."""
+        return frozenset(self.reads)
+
+    @cached_property
     def read_only(self):
         """
         Create a mapper from functions to read accesses.
         """
         return set(self.reads) - set(self.writes)
+
+    @cached_property
+    def write_targets(self):
+        """The Functions written within the Scope."""
+        return frozenset(self.writes)
+
+    @cached_property
+    def has_barrier(self):
+        """True if the Scope contains a fence-like control-flow object."""
+        return any(isinstance(e.rhs, (Fence, CriticalRegion)) for e in self.exprs)
 
     @cached_property
     def initialized(self):
@@ -1082,6 +1097,23 @@ class Scope(CacheInstances):
     @cached_property
     def functions(self):
         return set(self.reads) | set(self.writes)
+
+    @memoized_meth
+    def may_interact(self, other, has_barrier=False):
+        """
+        True if the Scope may induce cross-scope ordering constraints.
+
+        This is a cheap pre-check used to avoid full dependence analysis when
+        two scopes do not touch any common Function through a write and no
+        fence-like object lies between them.
+        """
+        if has_barrier or self.has_barrier or other.has_barrier:
+            return True
+
+        if self.write_targets & (other.read_targets | other.write_targets):
+            return True
+
+        return bool(other.write_targets & (self.read_targets | self.write_targets))
 
     @memoized_meth
     def a_query(self, timestamps=None, modes=None):

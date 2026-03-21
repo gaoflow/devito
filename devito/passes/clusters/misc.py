@@ -339,6 +339,12 @@ class Fusion(Queue):
         prefix = {i.dim for i in as_tuple(prefix)}
 
         dag = DAG(nodes=cgroups)
+        barriers = [cg.scope.has_barrier for cg in cgroups]
+
+        barrier_count = [0]
+        for i in barriers:
+            barrier_count.append(barrier_count[-1] + int(i))
+
         for n, cg0 in enumerate(cgroups):
 
             def is_cross(source, sink):
@@ -349,6 +355,9 @@ class Fusion(Queue):
                 return t0 < v <= t1 or t1 < v <= t0
 
             for n1, cg1 in enumerate(cgroups[n+1:], start=n+1):
+                has_barrier = barrier_count[n1 + 1] > barrier_count[n]
+                if not cg0.scope.may_interact(cg1.scope, has_barrier):
+                    continue
 
                 # A Scope to compute all cross-ClusterGroup anti-dependences
                 scope = Scope(exprs=cg0.exprs + cg1.exprs, rules=is_cross)
@@ -358,20 +367,21 @@ class Fusion(Queue):
                 # * All ClusterGroups between `cg0` and `cg1` must precede `cg1`
                 # * All ClusterGroups after `cg1` cannot precede `cg1`
                 if any(i.cause & prefix for i in scope.d_anti_gen()):
-                    for cg2 in cgroups[n:cgroups.index(cg1)]:
+                    for cg2 in cgroups[n:n1]:
                         dag.add_edge(cg2, cg1)
-                    for cg2 in cgroups[cgroups.index(cg1)+1:]:
+                    for cg2 in cgroups[n1+1:]:
                         dag.add_edge(cg1, cg2)
                     break
 
                 # Any anti- and iaw-dependences impose that `cg1` follows `cg0`
                 # and forbid any sort of fusion. Fences have the same effect
                 elif (
+                    has_barrier or
                     any(scope.d_anti_gen()) or
                     any(i.is_iaw for i in scope.d_output_gen()) or
-                    any(c.is_fence for c in flatten(cgroups[n:n1+1]))
-                ) or any(not (i.cause and i.cause & prefix) for i in scope.d_flow_gen()) \
-                        or any(scope.d_output_gen()):
+                    any(not (i.cause and i.cause & prefix) for i in scope.d_flow_gen()) or
+                    any(scope.d_output_gen())
+                ):
                     dag.add_edge(cg0, cg1)
 
         return dag
