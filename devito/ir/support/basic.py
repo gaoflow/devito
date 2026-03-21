@@ -1004,15 +1004,13 @@ class Scope(CacheInstances):
         the iteration symbols.
         """
         if isinstance(f, (Function, Temp, TempArray, TBArray)):
-            for i in chain(self.reads_explicit_gen(), self.reads_synchro_gen()):
-                if f is i.function:
-                    for j in extrema(i.access):
-                        yield TimedAccess(j, i.mode, i.timestamp, i.ispace)
+            for i in self.getreads(f):
+                for j in extrema(i.access):
+                    yield TimedAccess(j, i.mode, i.timestamp, i.ispace)
 
         else:
-            for i in self.reads_gen():
-                if f is i.function:
-                    yield i
+            for i in self.getreads(f):
+                yield i
 
     @cached_property
     def reads(self):
@@ -1126,8 +1124,9 @@ class Scope(CacheInstances):
     def d_flow_gen(self):
         """Generate the flow (or "read-after-write") dependences."""
         for k, v in self.writes.items():
+            reads = tuple(self.reads_smart_gen(k))
             for w in v:
-                for r in self.reads_smart_gen(k):
+                for r in reads:
                     if any(not rule(w, r) for rule in self.rules):
                         continue
 
@@ -1156,8 +1155,9 @@ class Scope(CacheInstances):
     def d_anti_gen(self, depcls=Dependence):
         """Generate the anti (or "write-after-read") dependences."""
         for k, v in self.writes.items():
+            reads = tuple(self.reads_smart_gen(k))
             for w in v:
-                for r in self.reads_smart_gen(k):
+                for r in reads:
                     if any(not rule(r, w) for rule in self.rules):
                         continue
 
