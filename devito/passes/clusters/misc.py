@@ -339,13 +339,15 @@ class Fusion(Queue):
         prefix = {i.dim for i in as_tuple(prefix)}
 
         dag = DAG(nodes=cgroups)
-        barriers = [cg.scope.has_barrier for cg in cgroups]
+        scopes = [cg.scope for cg in cgroups]
+        barriers = [scope.has_barrier for scope in scopes]
 
         barrier_count = [0]
         for i in barriers:
             barrier_count.append(barrier_count[-1] + int(i))
 
-        for n, cg0 in enumerate(cgroups):
+        for n, (cg0, scope0) in enumerate(zip(cgroups, scopes, strict=True)):
+            offset = len(cg0.exprs)
 
             def is_cross(source, sink):
                 # True if a cross-ClusterGroup dependence, False otherwise
@@ -354,13 +356,47 @@ class Fusion(Queue):
                 v = len(cg0.exprs)  # noqa: B023
                 return t0 < v <= t1 or t1 < v <= t0
 
-            for n1, cg1 in enumerate(cgroups[n+1:], start=n+1):
+            def make_scope(scope1, has_barrier):
+                targets = (
+                    scope0.write_targets & (scope1.read_targets | scope1.write_targets)
+                ) | (
+                    scope1.write_targets & (scope0.read_targets | scope0.write_targets)
+                )
+
+                reads = {}
+                writes = {}
+
+                for f in targets:
+                    reads0 = scope0.getreads(f)
+                    reads1 = scope1.getreads(f)
+                    writes0 = scope0.getwrites(f)
+                    writes1 = scope1.getwrites(f)
+
+                    if reads0:
+                        reads[f] = reads0
+                    if reads1:
+                        reads[f] = reads.get(f, ()) + tuple(i.shifted(offset)
+                                                            for i in reads1)
+
+                    if writes0:
+                        writes[f] = writes0
+                    if writes1:
+                        writes[f] = writes.get(f, ()) + tuple(i.shifted(offset)
+                                                              for i in writes1)
+
+                return Scope((), rules=is_cross, reads=reads.items(),
+                             writes=writes.items(), has_barrier=has_barrier)
+
+            for n1, (cg1, scope1) in enumerate(zip(cgroups[n+1:], scopes[n+1:],
+                                                   strict=True), start=n+1):
                 has_barrier = barrier_count[n1 + 1] > barrier_count[n]
-                if not cg0.scope.may_interact(cg1.scope, has_barrier):
+                if not scope0.may_interact(scope1, has_barrier):
                     continue
 
-                # A Scope to compute all cross-ClusterGroup anti-dependences
-                scope = Scope(exprs=cg0.exprs + cg1.exprs, rules=is_cross)
+                # A Scope to compute all cross-ClusterGroup dependences.
+                # Reuse the cached per-ClusterGroup accesses instead of rescanning
+                # the symbolic expressions for each candidate pair.
+                scope = make_scope(scope1, has_barrier)
 
                 # Anti-dependences along `prefix` break the execution flow
                 # (intuitively, "the loop nests are to be kept separated")

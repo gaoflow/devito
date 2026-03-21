@@ -320,6 +320,13 @@ class TimedAccess(IterationInstance, AccessMode):
     def lex_lt(self, other):
         return self.timestamp < other.timestamp
 
+    @memoized_meth
+    def shifted(self, offset):
+        if offset == 0:
+            return self
+
+        return TimedAccess(self.access, self.mode, self.timestamp + offset, self.ispace)
+
     def distance(self, other, logical=False):
         """
         Compute the distance from ``self`` to ``other``.
@@ -852,15 +859,25 @@ class Scope(CacheInstances):
     @classmethod
     def _preprocess_args(cls, exprs: Expr | Iterable[Expr],
                          **kwargs) -> tuple[tuple, dict]:
+        for i in ('reads', 'writes'):
+            try:
+                kwargs[i] = tuple(kwargs[i])
+            except KeyError:
+                pass
+
         return (as_tuple(exprs),), kwargs
 
     def __init__(self, exprs: tuple[Expr],
-                 rules: Rule | tuple[Rule] | None = None) -> None:
+                 rules: Rule | tuple[Rule] | None = None,
+                 reads=None, writes=None, has_barrier=None) -> None:
         """
         A Scope enables data dependence analysis on a totally ordered sequence
         of expressions.
         """
         self.exprs = exprs
+        self._reads = dict(reads) if reads is not None else None
+        self._writes = dict(writes) if writes is not None else None
+        self._has_barrier = has_barrier
 
         # A set of rules to drive the collection of dependencies
         self.rules: tuple[Scope.Rule] = as_tuple(rules)  # type: ignore[assignment]
@@ -905,6 +922,9 @@ class Scope(CacheInstances):
         """
         Create a mapper from functions to write accesses.
         """
+        if self._writes is not None:
+            return self._writes
+
         return as_mapper(self.writes_gen(), key=lambda i: i.function)
 
     @memoized_generator
@@ -1017,6 +1037,9 @@ class Scope(CacheInstances):
         """
         Create a mapper from functions to read accesses.
         """
+        if self._reads is not None:
+            return self._reads
+
         return as_mapper(self.reads_gen(), key=lambda i: i.function)
 
     @cached_property
@@ -1039,6 +1062,9 @@ class Scope(CacheInstances):
     @cached_property
     def has_barrier(self):
         """True if the Scope contains a fence-like control-flow object."""
+        if self._has_barrier is not None:
+            return self._has_barrier
+
         return any(isinstance(e.rhs, (Fence, CriticalRegion)) for e in self.exprs)
 
     @cached_property
