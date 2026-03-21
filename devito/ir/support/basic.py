@@ -15,7 +15,7 @@ from devito.symbolics import (
 )
 from devito.tools import (
     CacheInstances, Tag, as_mapper, as_tuple, filter_sorted, flatten, is_integer,
-    memoized_generator, memoized_meth, smart_gt, smart_lt
+    memoized_func, memoized_generator, memoized_meth, smart_gt, smart_lt
 )
 from devito.types import (
     ComponentAccess, CriticalRegion, Dimension, DimensionTuple, Fence, Function, Symbol,
@@ -889,13 +889,7 @@ class Scope(CacheInstances):
         Generate all write accesses.
         """
         for i, e in enumerate(self.exprs):
-            terminals = retrieve_accesses(e.lhs)
-            if q_routine(e.rhs):
-                with suppress(AttributeError):
-                    # Everything except: foreign routines, such as `cos` or `sin` etc.
-                    terminals.update(e.rhs.writes)
-
-            for j in terminals:
+            for j in _retrieve_write_accesses(e):
                 mode = 'WR' if e.is_Reduction else 'W'
                 yield TimedAccess(j, mode, i, e.ispace)
 
@@ -935,11 +929,7 @@ class Scope(CacheInstances):
         expressions.
         """
         for i, e in enumerate(self.exprs):
-            # Reads
-            terminals = retrieve_accesses(e.rhs, deep=True)
-            with suppress(AttributeError):
-                terminals.update(retrieve_accesses(e.lhs.indices))
-            for j in terminals:
+            for j in _retrieve_explicit_read_accesses(e):
                 mode = 'RR' if j.function is e.lhs.function and e.is_Reduction else 'R'
                 yield TimedAccess(j, mode, i, e.ispace)
 
@@ -948,9 +938,8 @@ class Scope(CacheInstances):
                 yield TimedAccess(e.lhs, 'RR', i, e.ispace)
 
             # Look up ConditionalDimensions
-            for v in e.conditionals.values():
-                for j in retrieve_accesses(v):
-                    yield TimedAccess(j, 'R', -1, e.ispace)
+            for j in _retrieve_conditional_read_accesses(e):
+                yield TimedAccess(j, 'R', -1, e.ispace)
 
     @memoized_generator
     def reads_implicit_gen(self):
@@ -1449,6 +1438,35 @@ def retrieve_accesses(exprs, **kwargs):
     exprs1 = uxreplace(exprs, subs)
 
     return compaccs | retrieve_terminals(exprs1, **kwargs) - set(subs.values())
+
+
+@memoized_func
+def _retrieve_write_accesses(expr):
+    terminals = retrieve_accesses(expr.lhs)
+    if q_routine(expr.rhs):
+        with suppress(AttributeError):
+            # Everything except: foreign routines, such as `cos` or `sin` etc.
+            terminals.update(expr.rhs.writes)
+
+    return tuple(terminals)
+
+
+@memoized_func
+def _retrieve_explicit_read_accesses(expr):
+    terminals = retrieve_accesses(expr.rhs, deep=True)
+    with suppress(AttributeError):
+        terminals.update(retrieve_accesses(expr.lhs.indices))
+
+    return tuple(terminals)
+
+
+@memoized_func
+def _retrieve_conditional_read_accesses(expr):
+    accesses = []
+    for v in expr.conditionals.values():
+        accesses.extend(retrieve_accesses(v))
+
+    return tuple(accesses)
 
 
 def disjoint_test(e0, e1, d, it):
