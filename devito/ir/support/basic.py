@@ -1129,6 +1129,83 @@ class Scope(CacheInstances):
         return bool(other.write_targets & (self.read_targets | self.write_targets))
 
     @memoized_meth
+    def fusion_hazards(self, prefix):
+        """
+        Return two booleans describing whether fusion is forbidden.
+
+        The first indicates an anti-dependence carried by `prefix`, which
+        forces a topofuse boundary. The second indicates any remaining
+        dependence that still forbids fusion.
+        """
+        anti = False
+
+        for k, writes in self.writes.items():
+            reads = tuple(self.reads_smart_gen(k))
+            for w in writes:
+                for r in reads:
+                    if any(not rule(r, w) for rule in self.rules):
+                        continue
+
+                    distance = r.distance(w)
+                    if S.ImaginaryUnit in distance:
+                        continue
+
+                    try:
+                        is_anti = distance > 0 or (r.lex_lt(w) and distance == 0)
+                    except TypeError:
+                        is_anti = not r.is_read_reduction
+
+                    if not is_anti:
+                        continue
+
+                    if _cause_from_distance(r.findices, distance) & prefix:
+                        return True, True
+
+                    anti = True
+
+        if anti:
+            return False, True
+
+        for k, writes in self.writes.items():
+            reads = tuple(self.reads_smart_gen(k))
+            for w in writes:
+                for r in reads:
+                    if any(not rule(w, r) for rule in self.rules):
+                        continue
+
+                    distance = w.distance(r)
+                    if S.ImaginaryUnit in distance:
+                        continue
+
+                    try:
+                        is_flow = distance > 0 or (r.lex_ge(w) and distance == 0)
+                    except TypeError:
+                        is_flow = not r.is_read_reduction
+
+                    if is_flow and not (_cause_from_distance(w.findices, distance) & prefix):
+                        return False, True
+
+        for writes in self.writes.values():
+            for w1 in writes:
+                for w2 in writes:
+                    if any(not rule(w2, w1) for rule in self.rules):
+                        continue
+
+                    distance = w2.distance(w1)
+                    if S.ImaginaryUnit in distance:
+                        continue
+
+                    try:
+                        is_output = distance > 0 or (w2.lex_gt(w1) and distance == 0)
+                    except TypeError:
+                        is_output = True
+
+                    if is_output:
+                        return False, True
+
+        return False, False
+
+    @memoized_meth
     def a_query(self, timestamps=None, modes=None):
         timestamps = as_tuple(timestamps)
         modes = as_tuple(modes) or TimedAccess._modes
@@ -1421,6 +1498,17 @@ class ExprGeometry:
 
 def vinf(entries):
     return Vector(*(entries + [S.Infinity]))
+
+
+def _cause_from_distance(findices, distance):
+    for i, j in zip(findices, distance, strict=False):
+        try:
+            if j > 0:
+                return i._defines
+        except TypeError:
+            return i._defines
+
+    return frozenset()
 
 
 def retrieve_accesses(exprs, **kwargs):
