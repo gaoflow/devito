@@ -49,6 +49,7 @@ class Cpu64OperatorMixin:
 
         # Fusion
         o['fuse-tasks'] = oo.pop('fuse-tasks', False)
+        o['fuse-workers'] = oo.pop('fuse-workers', 1)
 
         # Flops minimization
         o['cse-min-cost'] = oo.pop('cse-min-cost', cls.CSE_MIN_COST)

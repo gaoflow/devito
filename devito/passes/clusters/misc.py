@@ -1,4 +1,5 @@
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from itertools import groupby, product
 
 from devito.finite_differences import IndexDerivative
@@ -123,6 +124,7 @@ class Fusion(Queue):
 
         self.toposort = toposort
         self.fusetasks = options.get('fuse-tasks', False)
+        self.fuseworkers = options.get('fuse-workers', 1)
 
         super().__init__()
 
@@ -337,22 +339,15 @@ class Fusion(Queue):
 
         return ClusterGroup(dag.topological_sort(choose_element), prefix)
 
-    def _build_dag(self, cgroups, prefix):
-        """
-        A DAG representing the data dependences across the ClusterGroups within
-        a given scope.
-        """
-        prefix = {i.dim for i in as_tuple(prefix)}
+    def _build_dag_rows(self, rows, cgroups, scopes, prefix, barrier_count):
+        may_interact = Scope.may_interact
+        fusion_hazards = Scope.fusion_hazards
 
-        dag = DAG(nodes=cgroups)
-        scopes = [cg.scope for cg in cgroups]
-        barriers = [scope.has_barrier for scope in scopes]
+        edges = []
 
-        barrier_count = [0]
-        for i in barriers:
-            barrier_count.append(barrier_count[-1] + int(i))
-
-        for n, (cg0, scope0) in enumerate(zip(cgroups, scopes, strict=True)):
+        for n in rows:
+            cg0 = cgroups[n]
+            scope0 = scopes[n]
             offset = len(cg0.exprs)
 
             def is_cross(source, sink):
@@ -396,30 +391,63 @@ class Fusion(Queue):
             for n1, (cg1, scope1) in enumerate(zip(cgroups[n+1:], scopes[n+1:],
                                                    strict=True), start=n+1):
                 has_barrier = barrier_count[n1 + 1] > barrier_count[n]
-                if not scope0.may_interact(scope1, has_barrier):
+                if not may_interact(scope0, scope1, has_barrier):
                     continue
 
-                # A Scope to compute all cross-ClusterGroup dependences.
-                # Reuse the cached per-ClusterGroup accesses instead of rescanning
-                # the symbolic expressions for each candidate pair.
                 scope = make_scope(scope1, has_barrier)
-                anti_prefix, forbids_fusion = scope.fusion_hazards(frozenset(prefix))
+                anti_prefix, forbids_fusion = fusion_hazards(scope, prefix)
 
-                # Anti-dependences along `prefix` break the execution flow
-                # (intuitively, "the loop nests are to be kept separated")
-                # * All ClusterGroups between `cg0` and `cg1` must precede `cg1`
-                # * All ClusterGroups after `cg1` cannot precede `cg1`
                 if anti_prefix:
-                    for cg2 in cgroups[n:n1]:
-                        dag.add_edge(cg2, cg1)
-                    for cg2 in cgroups[n1+1:]:
-                        dag.add_edge(cg1, cg2)
+                    edges.extend((cg2, cg1) for cg2 in cgroups[n:n1])
+                    edges.extend((cg1, cg2) for cg2 in cgroups[n1+1:])
                     break
-
-                # Any anti- and iaw-dependences impose that `cg1` follows `cg0`
-                # and forbid any sort of fusion. Fences have the same effect
                 elif has_barrier or forbids_fusion:
-                    dag.add_edge(cg0, cg1)
+                    edges.append((cg0, cg1))
+
+        return edges
+
+    def _build_dag(self, cgroups, prefix):
+        """
+        A DAG representing the data dependences across the ClusterGroups within
+        a given scope.
+        """
+        prefix = frozenset(i.dim for i in as_tuple(prefix))
+
+        dag = DAG(nodes=cgroups)
+        scopes = [cg.scope for cg in cgroups]
+        barriers = [scope.has_barrier for scope in scopes]
+
+        barrier_count = [0]
+        for i in barriers:
+            barrier_count.append(barrier_count[-1] + int(i))
+
+        nitems = len(cgroups)
+        if self.fuseworkers <= 1 or nitems < 2:
+            edge_groups = (
+                self._build_dag_rows(range(nitems), cgroups, scopes, prefix, barrier_count),
+            )
+        else:
+            # These cached views are built from tee-backed iterators, so
+            # materialize them once on the main thread before fan-out.
+            for scope in scopes:
+                scope.reads
+                scope.writes
+                scope.read_targets
+                scope.write_targets
+
+            chunk_size = max((nitems + self.fuseworkers - 1) // self.fuseworkers, 1)
+            row_groups = [range(i, min(i + chunk_size, nitems))
+                          for i in range(0, nitems, chunk_size)]
+
+            with ThreadPoolExecutor(max_workers=self.fuseworkers) as executor:
+                edge_groups = executor.map(
+                    lambda rows: self._build_dag_rows(rows, cgroups, scopes, prefix, barrier_count),
+                    row_groups
+                )
+
+        for edges in edge_groups:
+            for cg0, cg1 in edges:
+                dag.add_edge(cg0, cg1)
 
         return dag
 
@@ -442,7 +470,8 @@ def fuse(clusters, toposort=False, options=None):
 
     nxt = clusters
     while True:
-        nxt = fuse(clusters, toposort='nofuse', options=options)
+        nxt = Fusion('nofuse', options).process(clusters)
+
         if all(c0 is c1 for c0, c1 in zip(clusters, nxt, strict=True)):
             break
         clusters = nxt
