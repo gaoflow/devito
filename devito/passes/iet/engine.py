@@ -440,6 +440,11 @@ def reuse_efuncs(root, efuncs, sregistry=None):
     # and finally `foo0(u(x)): bar0(u)`
     dag = create_call_graph(root.name, efuncs)
 
+    callers = defaultdict(list)
+    for n in dag.topological_sort():
+        for c in FindNodes(Call).visit(efuncs[n]):
+            callers[c.name].append(n)
+
     mapper = {}
     for i in dag.topological_sort():
         if i == root.name:
@@ -462,10 +467,12 @@ def reuse_efuncs(root, efuncs, sregistry=None):
             afunc, mapped = mapper[key]
             mapped.append(efunc)
 
-            for n in dag.downstream(i):
+            for n in filter_ordered(callers[i]):
                 subs = {c: c._rebuild(name=afunc.name)
                         for c in FindNodes(Call).visit(efuncs[n])
-                        if c.name == efuncs[i].name}
+                        if c.name == i}
+                if not subs:
+                    continue
                 efuncs[n] = Transformer(subs).visit(efuncs[n])
 
         except KeyError:
@@ -723,29 +730,24 @@ def update_args(root, efuncs, dag):
     if isinstance(root, ThreadCallable):
         return efuncs
 
-    # The parameters/arguments lists may have changed since a pass may have:
-    # 1) introduced a new symbol
     new_params = derive_parameters(root)
 
-    # 2) defined a symbol for which no definition was available yet (e.g.
-    # via a malloc, or a Dereference)
-    defines = FindSymbols('defines').visit(root.body)
-    drop_params = [a for a in root.parameters if a in defines]
+    defines = set(FindSymbols('defines').visit(root.body))
 
-    # 3) removed a symbol that was previously necessary (e.g., `x_size` after
-    # linearization)
-    symbols = FindSymbols('basics').visit(root.body)
-    drop_params.extend(a for a in root.parameters
-                       if (a.is_Symbol or a.is_LocalObject) and a not in symbols)
+    if any(a.is_Symbol or a.is_LocalObject for a in root.parameters):
+        symbols = set(FindSymbols('basics').visit(root.body))
+    else:
+        symbols = ()
 
-    # 4) removed a function that was previously necessary
-    functions = FindSymbols('symbolics').visit(root.body)
-    drop_params.extend(a for a in root.parameters
-                       if a.is_AbstractFunction and a not in functions)
+    if any(a.is_AbstractFunction for a in root.parameters):
+        functions = set(FindSymbols('symbolics').visit(root.body))
+    else:
+        functions = ()
 
-    # Must record the index, not the param itself, since a param may be
-    # bound to whatever arg, possibly a generic SymPy expr
-    drop_params = [root.parameters.index(a) for a in drop_params]
+    drop_params = {i for i, a in enumerate(root.parameters)
+                   if a in defines
+                   or ((a.is_Symbol or a.is_LocalObject) and a not in symbols)
+                   or (a.is_AbstractFunction and a not in functions)}
 
     if not (new_params or drop_params):
         return efuncs
