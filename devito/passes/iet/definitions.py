@@ -440,9 +440,14 @@ class DataManager:
                 maps=maps, objs=objs, unmaps=unmaps, frees=frees
             )
 
+        efuncs = flatten(efuncs)
+
+        if not mapper:
+            return iet, efuncs
+
         processed = Transformer(mapper, nested=True).visit(iet)
 
-        return processed, flatten(efuncs)
+        return processed, efuncs
 
     @iet_pass
     def place_definitions(self, iet, globs=None, **kwargs):

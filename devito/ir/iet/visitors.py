@@ -1323,6 +1323,11 @@ class Transformer(Visitor):
         self.mapper = mapper
         self.nested = nested
 
+    def visit(self, o, *args, **kwargs):
+        if type(self) is Transformer and not self.mapper:
+            return o
+        return super().visit(o, *args, **kwargs)
+
     def transform(self, o, handle, **kwargs):
         if handle is None:
             # None -> drop `o`
@@ -1350,7 +1355,10 @@ class Transformer(Visitor):
 
     def visit_tuple(self, o, **kwargs):
         visited = tuple(self._visit(i, **kwargs) for i in o)
-        return tuple(i for i in visited if i is not None)
+        filtered = tuple(i for i in visited if i is not None)
+        if type(o) is tuple and _all_same(filtered, o):
+            return o
+        return filtered
 
     visit_list = visit_tuple
 
@@ -1385,6 +1393,11 @@ class Uxreplace(Transformer):
         if expr is o.expr:
             return o
         return o._rebuild(expr=expr)
+
+    def visit(self, o, *args, **kwargs):
+        if not self.mapper:
+            return o
+        return super().visit(o, *args, **kwargs)
 
     def visit_Iteration(self, o):
         nodes = self._visit(o.nodes)
