@@ -433,6 +433,17 @@ def reuse_efuncs(root, efuncs, sregistry=None):
 
     The call sites in `root` are transformed accordingly.
     """
+    families = defaultdict(list)
+    for name, efunc in efuncs.items():
+        if name == root.name or isinstance(efunc, AsyncCallable):
+            continue
+        family = efunc.name.rstrip('0123456789') or efunc.name
+        families[family].append(name)
+
+    dedupe_families = {k for k, v in families.items() if len(v) > 1}
+    if not dedupe_families:
+        return efuncs
+
     # Topological sorting ensures that nested Calls are abstract first.
     # For example, given `[foo0(u(x)): bar0(u), foo1(u(x)): bar1(u)]`,
     # assuming that `bar0` and `bar1` are compatible, we first process the
@@ -440,10 +451,13 @@ def reuse_efuncs(root, efuncs, sregistry=None):
     # and finally `foo0(u(x)): bar0(u)`
     dag = create_call_graph(root.name, efuncs)
 
+    dedupe_names = {i for k in dedupe_families for i in families[k]}
+
     callers = defaultdict(list)
     for n in dag.topological_sort():
         for c in FindNodes(Call).visit(efuncs[n]):
-            callers[c.name].append(n)
+            if c.name in dedupe_names:
+                callers[c.name].append(n)
 
     mapper = {}
     for i in dag.topological_sort():
@@ -455,7 +469,12 @@ def reuse_efuncs(root, efuncs, sregistry=None):
         # Avoid premature lowering of AsyncCalls -- it would obscenely
         # complicate the logic of the `pthredify` pass
         if isinstance(efunc, AsyncCallable):
-            mapper[len(mapper)] = (efunc, [efunc])
+            mapper[('async', i)] = (efunc, [efunc])
+            continue
+
+        family = efunc.name.rstrip('0123456789') or efunc.name
+        if family not in dedupe_families:
+            mapper[('efunc', i)] = (efunc, [efunc])
             continue
 
         afunc = abstract_efunc(efunc)
