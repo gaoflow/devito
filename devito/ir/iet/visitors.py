@@ -51,6 +51,10 @@ __all__ = [
 ]
 
 
+def _all_same(lhs, rhs):
+    return len(lhs) == len(rhs) and all(a is b for a, b in zip(lhs, rhs, strict=True))
+
+
 class Visitor(GenericVisitor):
 
     def visit_Node(self, o, **kwargs):
@@ -1357,6 +1361,8 @@ class Transformer(Visitor):
         children = [self._visit(i, **kwargs) for i in o.children]
         if o._traversable and not any(children) and any(o.children):
             return None
+        if _all_same(children, o.children):
+            return o
         return o._rebuild(*children, **o.args_frozen)
 
     def visit_Operator(self, o, **kwargs):
@@ -1375,7 +1381,10 @@ class Uxreplace(Transformer):
     """
 
     def visit_Expression(self, o):
-        return o._rebuild(expr=uxreplace(o.expr, self.mapper))
+        expr = uxreplace(o.expr, self.mapper)
+        if expr is o.expr:
+            return o
+        return o._rebuild(expr=expr)
 
     def visit_Iteration(self, o):
         nodes = self._visit(o.nodes)
@@ -1386,24 +1395,30 @@ class Uxreplace(Transformer):
         uindices = [uxreplace(i, self.mapper) for i in o.uindices]
         uindices = filter_ordered(i for i in uindices if isinstance(i, Dimension))
 
+        if nodes is o.nodes and dimension is o.dim and _all_same(limits, o.limits) and \
+                pragmas is o.pragmas and _all_same(uindices, o.uindices):
+            return o
+
         return o._rebuild(nodes=nodes, dimension=dimension, limits=limits,
                           pragmas=pragmas, uindices=uindices)
 
     def visit_Definition(self, o):
-        try:
-            return o._rebuild(function=self.mapper[o.function])
-        except KeyError:
+        function = self.mapper.get(o.function, o.function)
+        if function is o.function:
             return o
+        return o._rebuild(function=function)
 
     def visit_Return(self, o):
-        try:
-            return o._rebuild(value=self.mapper[o.value])
-        except KeyError:
+        value = self.mapper.get(o.value, o.value)
+        if value is o.value:
             return o
+        return o._rebuild(value=value)
 
     def visit_Callable(self, o):
         body = self._visit(o.body)
         parameters = [self.mapper.get(i, i) for i in o.parameters]
+        if body is o.body and _all_same(parameters, o.parameters):
+            return o
         return o._rebuild(body=body, parameters=parameters)
 
     def visit_Call(self, o):
@@ -1415,19 +1430,28 @@ class Uxreplace(Transformer):
                 arguments.append(uxreplace(i, self.mapper))
         if o.retobj is not None:
             retobj = uxreplace(o.retobj, self.mapper)
+            if _all_same(arguments, o.arguments) and retobj is o.retobj:
+                return o
             return o._rebuild(arguments=arguments, retobj=retobj)
-        else:
-            return o._rebuild(arguments=arguments)
+
+        if _all_same(arguments, o.arguments):
+            return o
+        return o._rebuild(arguments=arguments)
 
     def visit_Lambda(self, o):
         body = self._visit(o.body)
         parameters = [self.mapper.get(i, i) for i in o.parameters]
+        if body is o.body and _all_same(parameters, o.parameters):
+            return o
         return o._rebuild(body=body, parameters=parameters)
 
     def visit_Conditional(self, o):
         condition = uxreplace(o.condition, self.mapper)
         then_body = self._visit(o.then_body)
         else_body = self._visit(o.else_body)
+        if condition is o.condition and then_body is o.then_body and \
+                else_body is o.else_body:
+            return o
         return o._rebuild(condition=condition, then_body=then_body,
                           else_body=else_body)
 
