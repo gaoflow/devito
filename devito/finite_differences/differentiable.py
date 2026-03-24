@@ -980,6 +980,12 @@ class IndexDerivative(IndexSum):
     def pivot(self):
         return self.base.subs({d: 0 for d in self.dimensions})
 
+
+    @cached_property
+    def pivot_functions(self):
+        from devito.symbolics import retrieve_functions
+        return tuple(retrieve_functions(self.base, mode='unique'))
+
     @property
     def weights(self):
         return self._weights
