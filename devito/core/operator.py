@@ -119,6 +119,12 @@ class BasicOperator(Operator):
     which may be easier to parallelize for certain backends.
     """
 
+    EXPR_WORKERS = 1
+    """
+    Number of Python worker threads used to lower independent top-level
+    expressions during expression evaluation.
+    """
+
     EXPAND = True
     """
     Unroll all loops with short, numeric trip count, such as loops created by
@@ -181,6 +187,7 @@ class BasicOperator(Operator):
         # Execution modes
         o['mpi'] = False
         o['parallel'] = False
+        o['expr-workers'] = oo.pop('expr-workers', cls.EXPR_WORKERS)
 
         if oo:
             raise InvalidOperator(
@@ -208,6 +215,11 @@ class BasicOperator(Operator):
 
         if oo['errctl'] not in (None, False, 'basic', 'max'):
             raise InvalidOperator("Illegal `errctl` value")
+
+        if not isinstance(oo['expr-workers'], (int, np.integer)):
+            raise InvalidOperator("`expr-workers` must be an integer")
+        if oo['expr-workers'] <= 0:
+            raise InvalidOperator("`expr-workers` must be > 0")
 
     def _autotune(self, args, setup):
         if setup in [False, 'off']:

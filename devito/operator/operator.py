@@ -1,11 +1,13 @@
 import ctypes
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict, namedtuple
 from contextlib import suppress
 from functools import cached_property
 from math import ceil
 from operator import attrgetter
 from tempfile import gettempdir
+from threading import RLock
 
 import numpy as np
 import sympy
@@ -48,6 +50,21 @@ __all__ = ['Operator']
 
 
 _layers = (disk_layer, host_layer, device_layer)
+
+
+class _CompileEvalCache:
+
+    def __init__(self):
+        self.mapper = {}
+        self.lock = RLock()
+
+    def read(self, key):
+        with self.lock:
+            return self.mapper[key]
+
+    def write(self, key, value):
+        with self.lock:
+            self.mapper[key] = value
 
 
 class Operator(Callable):
@@ -351,7 +368,17 @@ class Operator(Callable):
         # ModuloDimensions
         if not expand:
             expand = lambda d: d.is_Stepping
-        expressions = flatten([i._evaluate(expand=expand) for i in expressions])
+        expr_workers = min(kwargs['options']['expr-workers'], len(expressions))
+        eval_cache = _CompileEvalCache()
+
+        def evaluate(expr):
+            return expr._evaluate(expand=expand, _eval_cache=eval_cache)
+
+        if expr_workers <= 1:
+            expressions = flatten([evaluate(i) for i in expressions])
+        else:
+            with ThreadPoolExecutor(max_workers=expr_workers) as executor:
+                expressions = flatten(list(executor.map(evaluate, expressions)))
 
         # Scalarize the tensor equations, if any
         expressions = [j for i in expressions for j in i._flatten]
