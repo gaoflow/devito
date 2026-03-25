@@ -472,8 +472,42 @@ def fuse(clusters, toposort=False, options=None):
     times to actually maximize Clusters fusion. Hence, this is more aggressive than
     `toposort=True`.
     """
+    def changed_span(seq0, seq1):
+        first = None
+        last = None
+
+        for i, (c0, c1) in enumerate(zip(seq0, seq1, strict=True)):
+            if c0 is c1:
+                continue
+            if first is None:
+                first = i
+            last = i + 1
+
+        return first, last
+
     if toposort != 'maximal':
         return Fusion(toposort, options).process(clusters)
+
+    if (options or {}).get('fuse-mode') == 'derivatives':
+        nxt = Fusion('nofuse', options).process(clusters)
+        lo, hi = changed_span(clusters, nxt)
+
+        while lo is not None:
+            region = nxt[lo:hi]
+            nxt_region = Fusion('nofuse', options).process(region)
+
+            rlo, rhi = changed_span(region, nxt_region)
+            if rlo is None:
+                break
+
+            nxt = nxt[:lo] + nxt_region + nxt[hi:]
+            base = lo
+            lo, hi = base + rlo, base + rhi
+
+        clusters = nxt
+        clusters = fuse(clusters, toposort=False, options=options)
+
+        return clusters
 
     nxt = clusters
     while True:
