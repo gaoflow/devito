@@ -1,12 +1,14 @@
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Hashable, Iterable
 from contextlib import suppress
 from functools import cached_property
 from itertools import chain
 
 import sympy
 
-from devito.tools import Pickable, as_mapper, as_tuple, frozendict, is_integer
+from devito.tools import (
+    Pickable, as_mapper, as_tuple, frozendict, is_integer, memoized_func
+)
 from devito.types.dimension import Dimension
 from devito.types.utils import DimensionTuple
 from devito.warnings import warn
@@ -17,6 +19,23 @@ from .rsfd import d45
 from .tools import direct, transpose
 
 __all__ = ['Derivative']
+
+
+def _freeze_eval_kwargs(kwargs):
+    processed = {}
+    for k, v in kwargs.items():
+        if isinstance(v, dict):
+            v = frozendict(v)
+        if not isinstance(v, Hashable):
+            return None
+        processed[k] = v
+
+    return frozendict(processed)
+
+
+@memoized_func
+def _evaluate_memoized(derivative, kwargs):
+    return derivative._eval_fd(derivative.expr, **kwargs)
 
 
 class Derivative(sympy.Derivative, Differentiable, Pickable):
@@ -540,7 +559,11 @@ class Derivative(sympy.Derivative, Differentiable, Pickable):
         # Evaluate finite-difference.
         # NOTE: `evaluate` and `_eval_fd` split for potential future different
         # types of discretizations
-        return self._eval_fd(self.expr, **kwargs)
+        frozen_kwargs = _freeze_eval_kwargs(kwargs)
+        if frozen_kwargs is None:
+            return self._eval_fd(self.expr, **kwargs)
+
+        return _evaluate_memoized(self, frozen_kwargs)
 
     @property
     def _eval_deriv(self):
