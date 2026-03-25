@@ -123,6 +123,7 @@ class Fusion(Queue):
         options = options or {}
 
         self.toposort = toposort
+        self.fusemode = options.get('fuse-mode')
         self.fusetasks = options.get('fuse-tasks', False)
         self.fuseworkers = options.get('fuse-workers', 1)
 
@@ -394,8 +395,14 @@ class Fusion(Queue):
                 if not may_interact(scope0, scope1, has_barrier):
                     continue
 
-                scope = make_scope(scope1, has_barrier)
-                anti_prefix, forbids_fusion = fusion_hazards(scope, prefix)
+                if self.fusemode == 'derivatives':
+                    anti_prefix = bool(scope0.read_targets & scope1.write_targets)
+                    forbids_fusion = anti_prefix or bool(
+                        scope0.write_targets & (scope1.read_targets | scope1.write_targets)
+                    )
+                else:
+                    scope = make_scope(scope1, has_barrier)
+                    anti_prefix, forbids_fusion = fusion_hazards(scope, prefix)
 
                 if anti_prefix:
                     edges.extend((cg2, cg1) for cg2 in cgroups[n:n1])

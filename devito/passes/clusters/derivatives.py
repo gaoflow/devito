@@ -21,7 +21,9 @@ def lower_index_derivatives(clusters, mode=None, **kwargs):
         return clusters
 
     if mode != 'noop':
-        clusters = fuse(clusters, toposort='maximal', options=kwargs.get('options'))
+        options = kwargs.get('options') or {}
+        options = {**options, 'fuse-mode': 'derivatives'}
+        clusters = fuse(clusters, toposort='maximal', options=options)
 
     # At this point we can detect redundancies induced by inner derivatives that
     # previously were just not detectable via e.g. plain CSE. For example, if
