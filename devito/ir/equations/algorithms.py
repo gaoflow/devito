@@ -1,4 +1,6 @@
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from functools import singledispatch
 
 from devito.data.allocators import DataReference
@@ -108,54 +110,63 @@ def lower_exprs(expressions, subs=None, **kwargs):
     --------
     f(x - 2*h_x, y) -> f[xi + 2, yi + 4]  (assuming halo_size=4)
     """
-    return _lower_exprs(expressions, subs or {})
+    is_iterable = isinstance(expressions, Iterable)
+    expressions = as_tuple(expressions)
+    options = kwargs.get('options', {})
+    workers = min(options.get('expr-workers', 1), len(expressions))
 
+    callback = partial(_lower_expr, subs=subs or {})
 
-def _lower_exprs(expressions, subs):
-    processed = []
-    for expr in as_tuple(expressions):
-        dimension_map = _make_dimension_map(expr)
+    if workers <= 1:
+        processed = [callback(i) for i in expressions]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            processed = list(executor.map(callback, expressions))
 
-        # Handle Functions (typical case)
-        mapper = {f: _lower_exprs(f.indexify(subs=dimension_map), subs)
-                  for f in expr.find(AbstractFunction)}
-
-        # Handle Indexeds (from index notation)
-        for i in retrieve_indexed(expr):
-            f = i.function
-
-            # Introduce shifting to align with the computational domain
-            indices = [_lower_exprs(a, subs) + o for a, o in
-                       zip(i.indices, f._size_nodomain.left, strict=True)]
-
-            # Substitute spacing (spacing only used in own dimension)
-            indices = [i.xreplace({d.spacing: 1, -d.spacing: -1})
-                       for i, d in zip(indices, f.dimensions, strict=True)]
-
-            # Apply substitutions, if necessary
-            if dimension_map:
-                indices = [j.xreplace(dimension_map) for j in indices]
-
-            # Handle Array
-            if isinstance(f, Array) and f.initvalue is not None:
-                initvalue = [_lower_exprs(i, subs) for i in f.initvalue]
-                # TODO: fix rebuild to avoid new name
-                f = f._rebuild(name=f'{f.name}i', initvalue=initvalue)
-
-            mapper[i] = f.indexed[indices]
-        # Add dimensions map to the mapper in case dimensions are used
-        # as an expression, i.e. Eq(u, x, subdomain=xleft)
-        mapper.update(dimension_map)
-        # Add the user-supplied substitutions
-        mapper.update(subs)
-        # Apply mapper to expression
-        processed.append(uxreplace(expr, mapper))
-
-    if isinstance(expressions, Iterable):
+    if is_iterable:
         return processed
     else:
         assert len(processed) == 1
         return processed.pop()
+
+
+def _lower_expr(expr, subs):
+    dimension_map = _make_dimension_map(expr)
+
+    # Handle Functions (typical case)
+    mapper = {f: _lower_expr(f.indexify(subs=dimension_map), subs)
+              for f in expr.find(AbstractFunction)}
+
+    # Handle Indexeds (from index notation)
+    for i in retrieve_indexed(expr):
+        f = i.function
+
+        # Introduce shifting to align with the computational domain
+        indices = [_lower_expr(a, subs) + o for a, o in
+                   zip(i.indices, f._size_nodomain.left, strict=True)]
+
+        # Substitute spacing (spacing only used in own dimension)
+        indices = [i.xreplace({d.spacing: 1, -d.spacing: -1})
+                   for i, d in zip(indices, f.dimensions, strict=True)]
+
+        # Apply substitutions, if necessary
+        if dimension_map:
+            indices = [j.xreplace(dimension_map) for j in indices]
+
+        # Handle Array
+        if isinstance(f, Array) and f.initvalue is not None:
+            initvalue = [_lower_expr(i, subs) for i in f.initvalue]
+            # TODO: fix rebuild to avoid new name
+            f = f._rebuild(name=f'{f.name}i', initvalue=initvalue)
+
+        mapper[i] = f.indexed[indices]
+    # Add dimensions map to the mapper in case dimensions are used
+    # as an expression, i.e. Eq(u, x, subdomain=xleft)
+    mapper.update(dimension_map)
+    # Add the user-supplied substitutions
+    mapper.update(subs)
+    # Apply mapper to expression
+    return uxreplace(expr, mapper)
 
 
 def _make_dimension_map(expr):
