@@ -5,6 +5,8 @@ __all__ = ['GenericVisitor']
 
 class GenericVisitor:
 
+    _handler_funcs_cache = {}
+
     """
     A generic visitor.
 
@@ -30,23 +32,24 @@ class GenericVisitor:
     """
 
     def __init__(self):
+        self._handlers = {}
+        self._handler_funcs = self._handler_funcs_cache.setdefault(
+            type(self), self._build_handler_funcs()
+        )
+
+    @classmethod
+    def _build_handler_funcs(cls):
         handlers = {}
-        # visit methods are spelt visit_Foo.
         prefix = "visit_"
-        # Inspect the methods on this instance to find out which
-        # handlers are defined.
-        for (name, meth) in inspect.getmembers(self, predicate=inspect.ismethod):
+        for name, meth in inspect.getmembers(cls, predicate=inspect.isfunction):
             if not name.startswith(prefix):
                 continue
-            # Check the argument specification
-            # Valid options are:
-            #    visit_Foo(self, o, [*args, **kwargs])
             argspec = inspect.getfullargspec(meth)
             if len(argspec.args) < 2:
                 raise RuntimeError("Visit method signature must be "
                                    "visit_Foo(self, o, [*args, **kwargs])")
             handlers[name[len(prefix):]] = meth
-        self._handlers = handlers
+        return handlers
 
     """
     :attr:`default_args`. A dict of default keyword arguments for the visitor.
@@ -83,17 +86,20 @@ class GenericVisitor:
         """
         cls = instance.__class__
         try:
-            # Do we have a method handler defined for this type name
             return self._handlers[cls.__name__]
         except KeyError:
-            # No, walk the MRO.
-            for klass in cls.mro()[1:]:
-                entry = self._handlers.get(klass.__name__)
-                if entry:
-                    # Save it on this type name for faster lookup next time
-                    self._handlers[cls.__name__] = entry
-                    return entry
-        raise RuntimeError("No handler found for class %s", cls.__name__)
+            try:
+                entry = self._handler_funcs[cls.__name__]
+            except KeyError:
+                for klass in cls.mro()[1:]:
+                    entry = self._handler_funcs.get(klass.__name__)
+                    if entry is not None:
+                        self._handler_funcs[cls.__name__] = entry
+                        break
+                else:
+                    raise RuntimeError("No handler found for class %s", cls.__name__)
+            self._handlers[cls.__name__] = entry
+            return entry
 
     def visit(self, o, *args, **kwargs):
         """
@@ -115,7 +121,7 @@ class GenericVisitor:
     def _visit(self, o, *args, **kwargs):
         """Visit ``o``."""
         meth = self.lookup_method(o)
-        return meth(o, *args, **kwargs)
+        return meth(self, o, *args, **kwargs)
 
     def _post_visit(self, ret):
         """Postprocess the visitor output before returning it to the caller."""

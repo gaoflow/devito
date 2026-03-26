@@ -100,13 +100,9 @@ class LazyVisitor(GenericVisitor, Generic[YieldType, ResultType, FlagType]):
     Subclass-defined visit methods should be generators.
     """
 
-    def lookup_method(self, instance) \
-            -> Callable[..., LazyVisit[YieldType, FlagType]]:
-        return super().lookup_method(instance)
-
     def _visit(self, o, *args, **kwargs) -> LazyVisit[YieldType, FlagType]:
         meth = self.lookup_method(o)
-        flag = yield from meth(o, *args, **kwargs)
+        flag = yield from meth(self, o, *args, **kwargs)
         return flag  # noqa: B901
 
     def _post_visit(self, ret: LazyVisit[YieldType, FlagType]) -> ResultType:
@@ -1127,18 +1123,21 @@ class FindSymbols(LazyVisitor[Any, list[Any], None]):
         return sorted(filter_ordered(ret, key=id), key=str)
 
     def visit_Node(self, o: Node) -> Iterator[Any]:
-        yield from self._visit(o.children)
+        for i in o.children:
+            yield from self._visit(i)
         yield from self.rule(o)
 
     def visit_ThreadedProdder(self, o) -> Iterator[Any]:
         # TODO: this handle required because ThreadedProdder suffers from the
         # long-standing issue affecting all Node subclasses which rely on
         # multiple inheritance
-        yield from self._visit(o.then_body)
+        for i in o.then_body:
+            yield from self._visit(i)
         yield from self.rule(o)
 
     def visit_Operator(self, o) -> Iterator[Any]:
-        yield from self._visit(o.body)
+        for i in o.body:
+            yield from self._visit(i)
         yield from self.rule(o)
         for i in o._func_table.values():
             yield from self._visit(i)
@@ -1247,7 +1246,8 @@ class FindApplications(LazyVisitor[ApplicationType, set[ApplicationType], None])
         yield from o.expr.find(self.match)
 
     def visit_Iteration(self, o: Iteration, **kwargs) -> Iterator[ApplicationType]:
-        yield from self._visit(o.children)
+        for i in o.children:
+            yield from self._visit(i)
         yield from o.symbolic_min.find(self.match)
         yield from o.symbolic_max.find(self.match)
 
@@ -1472,26 +1472,36 @@ class Uxreplace(Transformer):
         condition = uxreplace(o.condition, self.mapper)
         nodes = self._visit(o.nodes)
         default = self._visit(o.default)
+        if condition is o.condition and nodes is o.nodes and default is o.default:
+            return o
         return o._rebuild(condition=condition, nodes=nodes, default=default)
 
     def visit_PointerCast(self, o):
         function = self.mapper.get(o.function, o.function)
         obj = self.mapper.get(o.obj, o.obj)
+        if function is o.function and obj is o.obj:
+            return o
         return o._rebuild(function=function, obj=obj)
 
     def visit_Dereference(self, o):
         pointee = self.mapper.get(o.pointee, o.pointee)
         pointer = self.mapper.get(o.pointer, o.pointer)
+        if pointee is o.pointee and pointer is o.pointer:
+            return o
         return o._rebuild(pointee=pointee, pointer=pointer)
 
     def visit_Pragma(self, o):
         arguments = [uxreplace(i, self.mapper) for i in o.arguments]
+        if _all_same(arguments, o.arguments):
+            return o
         return o._rebuild(arguments=arguments)
 
     def visit_PragmaTransfer(self, o):
         function = uxreplace(o.function, self.mapper)
         arguments = [uxreplace(i, self.mapper) for i in o.arguments]
         if o.imask is None:
+            if function is o.function and _all_same(arguments, o.arguments):
+                return o
             return o._rebuild(function=function, arguments=arguments)
 
         # An `imask` may be None, a list of symbols/numbers, or a list of
@@ -1504,12 +1514,17 @@ class Uxreplace(Transformer):
                               uxreplace(j, self.mapper)))
             except TypeError:
                 imask.append(uxreplace(v, self.mapper))
+        if function is o.function and _all_same(arguments, o.arguments) and \
+                _all_same(imask, o.imask):
+            return o
         return o._rebuild(function=function, imask=imask, arguments=arguments)
 
     def visit_ParallelTree(self, o):
         prefix = self._visit(o.prefix)
         body = self._visit(o.body)
         nthreads = self.mapper.get(o.nthreads, o.nthreads)
+        if prefix is o.prefix and body is o.body and nthreads is o.nthreads:
+            return o
         return o._rebuild(prefix=prefix, body=body, nthreads=nthreads)
 
     def visit_HaloSpot(self, o):
@@ -1517,11 +1532,15 @@ class Uxreplace(Transformer):
         fmapper = {self.mapper.get(k, k): v for k, v in hs.fmapper.items()}
         halo_scheme = hs.build(fmapper, hs.honored)
         body = self._visit(o.body)
+        if _all_same(fmapper, hs.fmapper) and body is o.body:
+            return o
         return o._rebuild(halo_scheme=halo_scheme, body=body)
 
     def visit_While(self, o, **kwargs):
         condition = uxreplace(o.condition, self.mapper)
         body = self._visit(o.body)
+        if condition is o.condition and body is o.body:
+            return o
         return o._rebuild(condition=condition, body=body)
 
     visit_ThreadedProdder = visit_Call
@@ -1531,6 +1550,9 @@ class Uxreplace(Transformer):
         grid = self.mapper.get(o.grid, o.grid)
         block = self.mapper.get(o.block, o.block)
         stream = self.mapper.get(o.stream, o.stream)
+        if _all_same(arguments, o.arguments) and grid is o.grid and \
+                block is o.block and stream is o.stream:
+            return o
         return o._rebuild(grid=grid, block=block, stream=stream,
                           arguments=arguments)
 

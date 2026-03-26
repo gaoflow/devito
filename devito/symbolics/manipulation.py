@@ -64,20 +64,26 @@ def uxreplace(expr, rule):
     Finally, `uxreplace` supports Reconstructable objects, that is, it searches
     for replacement opportunities inside the Reconstructable's `__rkwargs__`.
     """
+    if not rule:
+        return expr
     return _uxreplace(expr, rule)[0]
 
 
 def _uxreplace(expr, rule):
-    if expr in rule:
-        v = rule[expr]
+    get = rule.get
+    sentinel = object()
+
+    v = get(expr, sentinel)
+    if v is not sentinel:
         if not isinstance(v, dict):
             return v, True
         args, eargs = split(expr.args, lambda i: i in v)
         args = [v[i] for i in args if v[i] is not None]
         changed = True
-    elif expr.__class__ in rule:
+    else:
+        cls = get(expr.__class__, sentinel)
+    if v is sentinel and cls is not sentinel:
         # Exact type -> type substitution
-        cls = rule[expr.__class__]
         expr = cls(*expr.args)
         args, eargs = [], expr.args
         changed = True
@@ -89,21 +95,20 @@ def _uxreplace(expr, rule):
             args, eargs = [], []
         changed = False
 
-    if rule:
-        eargs, flag = _uxreplace_dispatch(eargs, rule)
-        args.extend(eargs)
-        changed |= flag
+    eargs, flag = _uxreplace_dispatch(eargs, rule)
+    args.extend(eargs)
+    changed |= flag
 
-        # If a Reconstructable object, we need to parse the kwargs as well
-        if _uxreplace_registry.dispatchable(expr):
-            v = {i: getattr(expr, i) for i in expr.__rkwargs__}
-            kwargs, flag = _uxreplace_dispatch(v, rule)
-        else:
-            kwargs, flag = {}, False
-        changed |= flag
+    # If a Reconstructable object, we need to parse the kwargs as well
+    if _uxreplace_registry.dispatchable(expr) and expr.__rkwargs__:
+        v = {i: getattr(expr, i) for i in expr.__rkwargs__}
+        kwargs, flag = _uxreplace_dispatch(v, rule)
+    else:
+        kwargs, flag = {}, False
+    changed |= flag
 
-        if changed:
-            return _uxreplace_handle(expr, args, kwargs), True
+    if changed:
+        return _uxreplace_handle(expr, args, kwargs), True
 
     return expr, False
 
@@ -123,29 +128,44 @@ def _(expr, rule):
 @_uxreplace_dispatch.register(Tuple)
 @_uxreplace_dispatch.register(list)
 def _(iterable, rule):
+    if not iterable:
+        return iterable, False
+
     ret = []
+    append = ret.append
+    replace = _uxreplace
     changed = False
     for a in iterable:
-        ax, flag = _uxreplace(a, rule)
-        ret.append(ax)
+        ax, flag = replace(a, rule)
+        append(ax)
         changed |= flag
+    if not changed:
+        return iterable, False
     return iterable.__class__(ret), changed
 
 
 @_uxreplace_dispatch.register(EnrichedTuple)
 def _(iterable, rule):
     retval, changed = _uxreplace_dispatch(tuple(iterable), rule)
+    if not changed:
+        return iterable, False
     return iterable.__class__(*retval, getters=iterable.getters), changed
 
 
 @_uxreplace_dispatch.register(dict)
 def _(mapper, rule):
+    if not mapper:
+        return mapper, False
+
     ret = {}
+    replace = _uxreplace_dispatch
     changed = False
     for k, v in mapper.items():
-        vx, flag = _uxreplace_dispatch(v, rule)
+        vx, flag = replace(v, rule)
         ret[k] = vx
         changed |= flag
+    if not changed:
+        return mapper, False
     return ret, changed
 
 
@@ -212,13 +232,21 @@ class UxreplaceRegistry(list):
 
     def register(self, cls, rkwargs_callback_mapper=None):
         self.append(cls)
+        self._dispatchable_types = tuple(self)
+        self._dispatchable_cache = {}
         _uxreplace_handle.register(cls, _uxreplace_handle_reconstructable)
 
         for kls, callback in (rkwargs_callback_mapper or {}).items():
             _uxreplace_dispatch.register(kls, callback)
 
     def dispatchable(self, obj):
-        return isinstance(obj, tuple(self))
+        cls = obj.__class__
+        try:
+            return self._dispatchable_cache[cls]
+        except KeyError:
+            retval = isinstance(obj, self._dispatchable_types)
+            self._dispatchable_cache[cls] = retval
+            return retval
 
 
 _uxreplace_registry = UxreplaceRegistry()
