@@ -40,6 +40,8 @@ __all__ = [
     'xreplace_indices',
 ]
 
+_uxreplace_sentinel = object()
+
 
 def uxreplace(expr, rule):
     """
@@ -71,7 +73,7 @@ def uxreplace(expr, rule):
 
 def _uxreplace(expr, rule):
     get = rule.get
-    sentinel = object()
+    sentinel = _uxreplace_sentinel
 
     v = get(expr, sentinel)
     if v is not sentinel:
@@ -88,11 +90,8 @@ def _uxreplace(expr, rule):
         args, eargs = [], expr.args
         changed = True
     else:
-        try:
-            args, eargs = [], expr.args
-        except AttributeError:
-            # E.g., unsympified `int`
-            args, eargs = [], []
+        eargs = getattr(expr, 'args', ())
+        args = []
         changed = False
 
     eargs, flag = _uxreplace_dispatch(eargs, rule)
@@ -100,8 +99,9 @@ def _uxreplace(expr, rule):
     changed |= flag
 
     # If a Reconstructable object, we need to parse the kwargs as well
-    if _uxreplace_registry.dispatchable(expr) and expr.__rkwargs__:
-        v = {i: getattr(expr, i) for i in expr.__rkwargs__}
+    rkwargs = getattr(expr, '__rkwargs__', ())
+    if rkwargs and _uxreplace_registry.dispatchable(expr):
+        v = {i: getattr(expr, i) for i in rkwargs}
         kwargs, flag = _uxreplace_dispatch(v, rule)
     else:
         kwargs, flag = {}, False

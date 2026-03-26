@@ -1122,6 +1122,44 @@ class FindSymbols(LazyVisitor[Any, list[Any], None]):
     def _post_visit(self, ret):
         return sorted(filter_ordered(ret, key=id), key=str)
 
+    def visit(self, o, *args, **kwargs):
+        if args or kwargs:
+            return super().visit(o, *args, **kwargs)
+
+        ret = []
+        seen = set()
+        stack = [o]
+        append = ret.append
+        rule = self.rule
+
+        while stack:
+            n = stack.pop()
+
+            if isinstance(n, tuple):
+                stack.extend(reversed(n))
+                continue
+            if isinstance(n, list):
+                stack.extend(reversed(n))
+                continue
+            if not hasattr(n, 'children'):
+                continue
+
+            for i in rule(n):
+                k = id(i)
+                if k not in seen:
+                    seen.add(k)
+                    append(i)
+
+            if getattr(n, 'is_Operator', False):
+                stack.extend(reversed(tuple(n._func_table.values())))
+                stack.extend(reversed(n.body))
+            elif type(n).__name__ == 'ThreadedProdder':
+                stack.extend(reversed(n.then_body))
+            else:
+                stack.extend(reversed(n.children))
+
+        return sorted(ret, key=str)
+
     def visit_Node(self, o: Node) -> Iterator[Any]:
         for i in o.children:
             yield from self._visit(i)
