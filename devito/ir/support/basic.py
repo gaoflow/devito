@@ -333,6 +333,7 @@ class TimedAccess(IterationInstance, AccessMode, CacheInstances):
 
         return TimedAccess(self.access, self.mode, self.timestamp + offset, self.ispace)
 
+    @memoized_meth
     def distance(self, other, logical=False):
         """
         Compute the distance from ``self`` to ``other``.
