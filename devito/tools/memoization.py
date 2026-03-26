@@ -142,10 +142,9 @@ class CacheInstancesMeta(type):
     def __init__(cls: type[InstanceType], *args) -> None:  # type: ignore
         super().__init__(*args)
 
-        # Register the cached type and eagerly create its cache, bound to its
-        # own constructor. Eager initialisation avoids a bug where a subclass
-        # would inherit (and reuse) a parent's cache via MRO lookup if the
-        # parent happened to be instantiated first.
+        cls._instance_cache = None
+
+        # Register the cached type
         CacheInstancesMeta._cached_types.add(cls)
         maxsize = cls._instance_cache_size
         cls._instance_cache = lru_cache(maxsize=maxsize)(
@@ -154,6 +153,13 @@ class CacheInstancesMeta(type):
 
     def __call__(cls: type[InstanceType],  # type: ignore
                  *args, **kwargs) -> InstanceType:
+        maxsize = cls._instance_cache_size
+        if maxsize == 0:
+            return super().__call__(*args, **kwargs)
+
+        if cls._instance_cache is None:
+            cls._instance_cache = lru_cache(maxsize=maxsize)(super().__call__)
+
         args, kwargs = cls._preprocess_args(*args, **kwargs)
         return cls._instance_cache(*args, **kwargs)
 
