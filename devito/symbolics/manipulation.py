@@ -98,9 +98,13 @@ def _uxreplace(expr, rule):
     args.extend(eargs)
     changed |= flag
 
-    # If a Reconstructable object, we need to parse the kwargs as well
+    # Untouched leaves are common enough to deserve a fast exit
     rkwargs = getattr(expr, '__rkwargs__', ())
-    if rkwargs and _uxreplace_registry.dispatchable(expr):
+    if not changed and not eargs and not rkwargs:
+        return expr, False
+
+    # If a Reconstructable object, we need to parse the kwargs as well
+    if rkwargs and getattr(expr.__class__, '_uxreplace_dispatchable', False):
         v = {i: getattr(expr, i) for i in rkwargs}
         kwargs, flag = _uxreplace_dispatch(v, rule)
     else:
@@ -232,21 +236,11 @@ class UxreplaceRegistry(list):
 
     def register(self, cls, rkwargs_callback_mapper=None):
         self.append(cls)
-        self._dispatchable_types = tuple(self)
-        self._dispatchable_cache = {}
+        cls._uxreplace_dispatchable = True
         _uxreplace_handle.register(cls, _uxreplace_handle_reconstructable)
 
         for kls, callback in (rkwargs_callback_mapper or {}).items():
             _uxreplace_dispatch.register(kls, callback)
-
-    def dispatchable(self, obj):
-        cls = obj.__class__
-        try:
-            return self._dispatchable_cache[cls]
-        except KeyError:
-            retval = isinstance(obj, self._dispatchable_types)
-            self._dispatchable_cache[cls] = retval
-            return retval
 
 
 _uxreplace_registry = UxreplaceRegistry()
