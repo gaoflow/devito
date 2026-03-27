@@ -2,8 +2,9 @@ import numpy as np
 
 from devito.ir.iet import FindSections, FindSymbols
 from devito.symbolics import Keyword, Macro
-from devito.tools import filter_ordered
+from devito.tools import as_tuple, filter_ordered
 from devito.types import Global
+from devito.types.basic import Basic
 
 __all__ = [
     'derive_parameters',
@@ -98,6 +99,64 @@ def filter_iterations(tree, key=lambda i: i):
     return filtered
 
 
+def _collect_symbol_inventory(iet):
+    functions = []
+    basics = []
+    defines = []
+    seen_functions = set()
+    seen_basics = set()
+    seen_defines = set()
+    stack = [iet]
+    stack_extend = stack.extend
+
+    while stack:
+        n = stack.pop()
+        ncls = n.__class__
+
+        if ncls is tuple or ncls is list:
+            stack_extend(n)
+            continue
+
+        try:
+            children = n.children
+        except AttributeError:
+            continue
+
+        for i in n.functions:
+            k = id(i)
+            if k not in seen_functions:
+                seen_functions.add(k)
+                functions.append(i)
+
+        for i in n.expr_symbols:
+            if not isinstance(i, Basic):
+                continue
+            k = id(i)
+            if k not in seen_basics:
+                seen_basics.add(k)
+                basics.append(i)
+
+        for i in as_tuple(n.defines):
+            k = id(i)
+            if k not in seen_defines:
+                seen_defines.add(k)
+                defines.append(i)
+
+        if getattr(n, 'is_Operator', False):
+            stack_extend(n.body)
+            stack_extend(n._func_table.values())
+        elif ncls.__name__ == 'ThreadedProdder':
+            stack_extend(n.then_body)
+        else:
+            stack_extend(children)
+
+    functions.sort(key=str)
+    basics.sort(key=str)
+    defines.sort(key=str)
+
+    return functions, basics, defines
+
+
 def derive_parameters(iet, drop_locals=False, ordering='default'):
     """
     Derive all input parameters (function call arguments) from an IET
@@ -105,11 +164,8 @@ def derive_parameters(iet, drop_locals=False, ordering='default'):
     """
     assert ordering in ('default', 'canonical')
 
-    # Extract all candidate parameters
-    candidates = FindSymbols().visit(iet)
-
-    # Symbols, Objects, etc, become input parameters as well
-    basics = FindSymbols('basics').visit(iet)
+    functions, basics, defines = _collect_symbol_inventory(iet)
+    candidates = list(functions)
     candidates.extend(i.function for i in basics)
 
     # Filter off duplicates (e.g., `x_size` is extracted by both calls to
@@ -117,8 +173,8 @@ def derive_parameters(iet, drop_locals=False, ordering='default'):
     candidates = filter_ordered(candidates)
 
     # Filter off symbols which are defined somewhere within `iet`
-    defines = [s.name for s in FindSymbols('defines').visit(iet)]
-    parameters = [s for s in candidates if s.name not in defines]
+    define_names = {s.name for s in defines}
+    parameters = [s for s in candidates if s.name not in define_names]
 
     # Drop globally-visible objects
     parameters = [p for p in parameters

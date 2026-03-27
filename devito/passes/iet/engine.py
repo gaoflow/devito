@@ -10,6 +10,7 @@ from devito.ir.iet import (
     Iteration, MapNodes, MetaCall, SyncSpot, ThreadCallable, Transformer, Uxreplace,
     derive_parameters
 )
+from devito.ir.iet.utils import _collect_symbol_inventory
 from devito.ir.support import SymbolRegistry
 from devito.mpi.distributed import MPINeighborhood
 from devito.mpi.routines import Gather, HaloUpdate, HaloWait, MPIMsg, Scatter
@@ -750,16 +751,16 @@ def update_args(root, efuncs, dag):
         return efuncs
 
     new_params = derive_parameters(root)
-
-    defines = set(FindSymbols('defines').visit(root.body))
+    functions, basics, defines = _collect_symbol_inventory(root.body)
+    defines = set(defines)
 
     if any(a.is_Symbol or a.is_LocalObject for a in root.parameters):
-        symbols = set(FindSymbols('basics').visit(root.body))
+        symbols = set(basics)
     else:
         symbols = ()
 
     if any(a.is_AbstractFunction for a in root.parameters):
-        functions = set(FindSymbols('symbolics').visit(root.body))
+        functions = set(functions)
     else:
         functions = ()
 
