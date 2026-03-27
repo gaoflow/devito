@@ -15,7 +15,7 @@ from devito.symbolics import (
 )
 from devito.tools import (
     CacheInstances, Tag, as_mapper, as_tuple, filter_sorted, flatten, is_integer,
-    memoized_func, memoized_generator, memoized_meth, smart_gt, smart_lt
+    memoized_generator, memoized_meth, smart_gt, smart_lt
 )
 from devito.types import (
     ComponentAccess, CriticalRegion, Dimension, DimensionTuple, Fence, Function, Symbol,
@@ -1535,7 +1535,6 @@ def retrieve_accesses(exprs, **kwargs):
     return compaccs | retrieve_terminals(exprs1, **kwargs) - set(subs.values())
 
 
-@memoized_func
 def _retrieve_write_accesses(expr):
     terminals = retrieve_accesses(expr.lhs)
     if q_routine(expr.rhs):
@@ -1546,7 +1545,6 @@ def _retrieve_write_accesses(expr):
     return tuple(terminals)
 
 
-@memoized_func
 def _retrieve_explicit_read_accesses(expr):
     terminals = retrieve_accesses(expr.rhs, deep=True)
     with suppress(AttributeError):
@@ -1555,7 +1553,6 @@ def _retrieve_explicit_read_accesses(expr):
     return tuple(terminals)
 
 
-@memoized_func
 def _retrieve_conditional_read_accesses(expr):
     accesses = []
     for v in expr.conditionals.values():
