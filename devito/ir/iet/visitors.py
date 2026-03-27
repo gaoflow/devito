@@ -1130,33 +1130,36 @@ class FindSymbols(LazyVisitor[Any, list[Any], None]):
         seen = set()
         stack = [o]
         append = ret.append
+        stack_extend = stack.extend
+        seen_add = seen.add
         rule = self.rule
 
         while stack:
             n = stack.pop()
+            ncls = n.__class__
 
-            if isinstance(n, tuple):
-                stack.extend(reversed(n))
+            if ncls is tuple or ncls is list:
+                stack_extend(n)
                 continue
-            if isinstance(n, list):
-                stack.extend(reversed(n))
-                continue
-            if not hasattr(n, 'children'):
+
+            try:
+                children = n.children
+            except AttributeError:
                 continue
 
             for i in rule(n):
                 k = id(i)
                 if k not in seen:
-                    seen.add(k)
+                    seen_add(k)
                     append(i)
 
             if getattr(n, 'is_Operator', False):
-                stack.extend(reversed(tuple(n._func_table.values())))
-                stack.extend(reversed(n.body))
-            elif type(n).__name__ == 'ThreadedProdder':
-                stack.extend(reversed(n.then_body))
+                stack_extend(n.body)
+                stack_extend(n._func_table.values())
+            elif ncls.__name__ == 'ThreadedProdder':
+                stack_extend(n.then_body)
             else:
-                stack.extend(reversed(n.children))
+                stack_extend(children)
 
         return sorted(ret, key=str)
 
