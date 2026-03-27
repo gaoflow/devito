@@ -113,8 +113,6 @@ class Queue:
 
 class Prefix(IterationSpace):
 
-    _instance_cache_size = 0
-
     def __init__(self, ispace, guards, properties, syncs):
         super().__init__(ispace.intervals, ispace.sub_iterators, ispace.directions)
 
