@@ -74,6 +74,7 @@ def uxreplace(expr, rule):
 def _uxreplace(expr, rule):
     get = rule.get
     sentinel = _uxreplace_sentinel
+    rkwargs = None
 
     v = get(expr, sentinel)
     if v is not sentinel:
@@ -91,17 +92,19 @@ def _uxreplace(expr, rule):
         changed = True
     else:
         eargs = getattr(expr, 'args', ())
+        rkwargs = getattr(expr, '__rkwargs__', ())
+        if not eargs and not rkwargs:
+            return expr, False
         args = []
         changed = False
 
-    eargs, flag = _uxreplace_dispatch(eargs, rule)
-    args.extend(eargs)
-    changed |= flag
+    if eargs:
+        eargs, flag = _uxreplace_dispatch(eargs, rule)
+        args.extend(eargs)
+        changed |= flag
 
-    # Untouched leaves are common enough to deserve a fast exit
-    rkwargs = getattr(expr, '__rkwargs__', ())
-    if not changed and not eargs and not rkwargs:
-        return expr, False
+    if rkwargs is None:
+        rkwargs = getattr(expr, '__rkwargs__', ())
 
     # If a Reconstructable object, we need to parse the kwargs as well
     if rkwargs and getattr(expr.__class__, '_uxreplace_dispatchable', False):
@@ -132,20 +135,22 @@ def _(expr, rule):
 @_uxreplace_dispatch.register(Tuple)
 @_uxreplace_dispatch.register(list)
 def _(iterable, rule):
-    if not iterable:
+    if len(iterable) == 0:
         return iterable, False
 
-    ret = []
-    append = ret.append
     replace = _uxreplace
-    changed = False
-    for a in iterable:
+    ret = None
+    for i, a in enumerate(iterable):
         ax, flag = replace(a, rule)
-        append(ax)
-        changed |= flag
-    if not changed:
+        if flag:
+            if ret is None:
+                ret = list(iterable[:i])
+            ret.append(ax)
+        elif ret is not None:
+            ret.append(ax)
+    if ret is None:
         return iterable, False
-    return iterable.__class__(ret), changed
+    return iterable.__class__(ret), True
 
 
 @_uxreplace_dispatch.register(EnrichedTuple)
