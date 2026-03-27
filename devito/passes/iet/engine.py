@@ -75,6 +75,11 @@ class Graph(Byproduct):
 
     def __init__(self, iet, options=None, sregistry=None, **kwargs):
         self.sregistry = sregistry
+        self._reuse_efuncs_cache = {
+            'abstract': {},
+            'calls': {},
+            'signature': {},
+        }
 
         super().__init__({iet.name: iet})
 
@@ -85,13 +90,14 @@ class Graph(Byproduct):
         # All symbols requiring host-device data transfers when running
         # on device
         self.data_movs = rmovs, wmovs = set(), set()
+        rmovs_all = set()
         gpu_fit = (options or {}).get('gpu-fit', ())
         for i in FindNodes(ExprStmt).visit(iet):
             wmovs.update({w for w in i.writes
                           if needs_transfer(w, gpu_fit)})
-        for i in FindNodes(ExprStmt).visit(iet):
-            rmovs.update({f for f in i.functions
-                          if needs_transfer(f, gpu_fit) and f not in wmovs})
+            rmovs_all.update({f for f in i.functions
+                              if needs_transfer(f, gpu_fit)})
+        rmovs.update(f for f in rmovs_all if f not in wmovs)
 
     @property
     def root(self):
@@ -168,7 +174,8 @@ class Graph(Byproduct):
         if len(efuncs) > len(self.efuncs):
             efuncs = reuse_compounds(efuncs, self.sregistry)
             efuncs = abstract_component_accesses(efuncs)
-            efuncs = reuse_efuncs(self.root, efuncs, self.sregistry)
+            efuncs = reuse_efuncs(self.root, efuncs, self.sregistry,
+                                  self._reuse_efuncs_cache)
 
         self.efuncs = efuncs
 
@@ -418,7 +425,7 @@ def abstract_component_accesses(efuncs):
     return processed
 
 
-def reuse_efuncs(root, efuncs, sregistry=None):
+def reuse_efuncs(root, efuncs, sregistry=None, cache=None):
     """
     Generalise `efuncs` so that syntactically identical Callables may be dropped,
     thus maximizing code reuse.
@@ -453,10 +460,18 @@ def reuse_efuncs(root, efuncs, sregistry=None):
     dag = create_call_graph(root.name, efuncs)
 
     dedupe_names = {i for k in dedupe_families for i in families[k]}
+    if cache is None:
+        abstract_cache = None
+        calls_cache = None
+        signature_cache = None
+    else:
+        abstract_cache = cache.setdefault('abstract', {})
+        calls_cache = cache.setdefault('calls', {})
+        signature_cache = cache.setdefault('signature', {})
 
     callers = defaultdict(list)
     for n in dag.topological_sort():
-        for c in FindNodes(Call).visit(efuncs[n]):
+        for c in _reuse_efuncs_find_calls(efuncs[n], calls_cache):
             if c.name in dedupe_names:
                 callers[c.name].append(n)
 
@@ -478,8 +493,8 @@ def reuse_efuncs(root, efuncs, sregistry=None):
             mapper[('efunc', i)] = (efunc, [efunc])
             continue
 
-        afunc = abstract_efunc(efunc)
-        key = afunc._signature()
+        afunc = _reuse_efuncs_abstract(efunc, abstract_cache)
+        key = _reuse_efuncs_signature(afunc, signature_cache)
 
         try:
             # If we manage to successfully map `efunc` to a previously abstracted
@@ -488,12 +503,8 @@ def reuse_efuncs(root, efuncs, sregistry=None):
             mapped.append(efunc)
 
             for n in filter_ordered(callers[i]):
-                subs = {c: c._rebuild(name=afunc.name)
-                        for c in FindNodes(Call).visit(efuncs[n])
-                        if c.name == i}
-                if not subs:
-                    continue
-                efuncs[n] = Transformer(subs).visit(efuncs[n])
+                efuncs[n] = _reuse_efuncs_rewrite_callsites(efuncs[n], i, afunc.name,
+                                                            calls_cache)
 
         except KeyError:
             afunc = afunc._rebuild(name=efunc.name)
@@ -505,6 +516,64 @@ def reuse_efuncs(root, efuncs, sregistry=None):
     retval.update({i.name: i for i in processed})
 
     return retval
+
+
+@timed_pass(name='reuse-efuncs-find-calls')
+def _reuse_efuncs_find_calls(efunc, cache=None):
+    if cache is not None:
+        try:
+            return cache[efunc]
+        except KeyError:
+            pass
+
+    retval = FindNodes(Call).visit(efunc)
+
+    if cache is not None:
+        cache[efunc] = retval
+
+    return retval
+
+
+@timed_pass(name='reuse-efuncs-abstract')
+def _reuse_efuncs_abstract(efunc, cache=None):
+    if cache is not None:
+        try:
+            return cache[efunc]
+        except KeyError:
+            pass
+
+    retval = abstract_efunc(efunc)
+
+    if cache is not None:
+        cache[efunc] = retval
+
+    return retval
+
+
+@timed_pass(name='reuse-efuncs-signature')
+def _reuse_efuncs_signature(efunc, cache=None):
+    if cache is not None:
+        try:
+            return cache[efunc]
+        except KeyError:
+            pass
+
+    retval = efunc._signature()
+
+    if cache is not None:
+        cache[efunc] = retval
+
+    return retval
+
+
+@timed_pass(name='reuse-efuncs-rewrite-callers')
+def _reuse_efuncs_rewrite_callsites(efunc, old_name, new_name, calls_cache=None):
+    subs = {c: c._rebuild(name=new_name)
+            for c in _reuse_efuncs_find_calls(efunc, calls_cache)
+            if c.name == old_name}
+    if not subs:
+        return efunc
+    return Transformer(subs).visit(efunc)
 
 
 def abstract_efunc(efunc):
@@ -548,6 +617,8 @@ def abstract_objects(objects0, sregistry=None):
     mapper = {}
     sregistry = sregistry or SymbolRegistry()
     for i in objects:
+        if i in mapper:
+            continue
         abstract_object(i, mapper, sregistry)
 
     return mapper

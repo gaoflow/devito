@@ -25,6 +25,7 @@ from devito.types import (
     Array, ComponentAccess, CustomDimension, DeviceMap, DeviceRM, Dimension, Eq, Symbol,
     size_t
 )
+from devito.types.basic import Basic, IndexedBase
 
 __all__ = ['DataManager', 'DeviceAwareDataManager', 'Storage']
 
@@ -76,6 +77,98 @@ class Storage(OrderedDict):
     def include(self, v):
         if v:
             self.includes.add(v)
+
+
+def _collect_datamanager_inventory(iet):
+    functions = []
+    basics = []
+    defines = []
+    define_aliases = []
+    globals_ = []
+    indexeds = []
+    seen_functions = set()
+    seen_basics = set()
+    seen_defines = set()
+    seen_define_aliases = set()
+    seen_globals = set()
+    seen_indexeds = set()
+    stack = [iet]
+    stack_extend = stack.extend
+
+    while stack:
+        n = stack.pop()
+        ncls = n.__class__
+
+        if ncls is tuple or ncls is list:
+            stack_extend(n)
+            continue
+
+        try:
+            children = n.children
+        except AttributeError:
+            continue
+
+        for f in n.functions:
+            k = id(f)
+            if k not in seen_functions:
+                seen_functions.add(k)
+                functions.append(f)
+
+            if f._mem_global:
+                base = f.base
+                k = id(base)
+                if k not in seen_globals:
+                    seen_globals.add(k)
+                    globals_.append(base)
+
+        for i in n.expr_symbols:
+            if not isinstance(i, Basic):
+                continue
+
+            k = id(i)
+            if k not in seen_basics:
+                seen_basics.add(k)
+                basics.append(i)
+
+            if i.is_Indexed or isinstance(i, IndexedBase):
+                if k not in seen_indexeds:
+                    seen_indexeds.add(k)
+                    indexeds.append(i)
+
+        for i in as_tuple(n.defines):
+            k = id(i)
+            if k not in seen_defines:
+                seen_defines.add(k)
+                defines.append(i)
+
+            f = i.function
+            if f.is_ArrayBasic:
+                aliases = (f, f.indexed)
+            else:
+                aliases = (i,)
+
+            for v in aliases:
+                k = id(v)
+                if k not in seen_define_aliases:
+                    seen_define_aliases.add(k)
+                    define_aliases.append(v)
+
+        if getattr(n, 'is_Operator', False):
+            stack_extend(n.body)
+            stack_extend(n._func_table.values())
+        elif ncls.__name__ == 'ThreadedProdder':
+            stack_extend(n.then_body)
+        else:
+            stack_extend(children)
+
+    functions.sort(key=str)
+    basics.sort(key=str)
+    defines.sort(key=str)
+    define_aliases.sort(key=str)
+    globals_.sort(key=str)
+    indexeds.sort(key=str)
+
+    return functions, basics, defines, define_aliases, globals_, indexeds
 
 
 class DataManager:
@@ -472,9 +565,11 @@ class DataManager:
         # Process all other definitions, essentially all temporary objects
         # created by the compiler up to this point (Array, LocalObject, etc.)
         storage = Storage()
-        defines = FindSymbols('defines-aliases|globals').visit(iet)
+        functions, _, _, define_aliases, globals_, _ = _collect_datamanager_inventory(iet)
+        defines = set(define_aliases)
+        defines.update(globals_)
 
-        for i in FindSymbols().visit(iet):
+        for i in functions:
             if i in defines:
                 continue
 
@@ -534,7 +629,7 @@ class DataManager:
             The input Iteration/Expression tree.
         """
         # Candidates
-        indexeds = FindSymbols('indexeds|indexedbases').visit(iet)
+        _, _, defines, _, globals_, indexeds = _collect_datamanager_inventory(iet)
 
         # Create Function -> n-dimensional array casts
         # E.g. `float (*u)[.] = (float (*)[.]) u_vec->data`
@@ -542,7 +637,8 @@ class DataManager:
         # defined inside the kernel, which happens, for example, when:
         # (i) Dereferencing a PointerArray, e.g., `float (*r0)[.] = (float(*)[.]) pr0[.]`
         # (ii) Declaring a raw pointer, e.g., `float * r0 = NULL; *malloc(&(r0), ...)
-        defines = set(FindSymbols('defines|globals').visit(iet))
+        defines = set(defines)
+        defines.update(globals_)
         bases = sorted({i.base for i in indexeds}, key=lambda i: i.name)
 
         # Some objects don't distinguish their _C_symbol because they are known,
@@ -679,8 +775,9 @@ class DeviceAwareDataManager(DataManager):
         """
         Transform `iet` such that device pointers are used in DeviceCalls.
         """
-        defines = FindSymbols('defines').visit(iet)
-        dmaps = [i for i in FindSymbols('basics').visit(iet)
+        _, basics, defines, _, _, _ = _collect_datamanager_inventory(iet)
+        defines = set(defines)
+        dmaps = [i for i in basics
                  if isinstance(i, DeviceMap) and i not in defines]
 
         maps = [self.langbb.PointerCast(i.function, obj=i) for i in dmaps]
