@@ -1138,7 +1138,7 @@ class FindSymbols(LazyVisitor[Any, list[Any], None]):
             n = stack.pop()
             ncls = n.__class__
 
-            if ncls is tuple or ncls is list:
+            if isinstance(n, (tuple, list)):
                 stack_extend(n)
                 continue
 
@@ -1153,8 +1153,8 @@ class FindSymbols(LazyVisitor[Any, list[Any], None]):
                     seen_add(k)
                     append(i)
 
-            if getattr(n, 'is_Operator', False):
-                stack_extend(n.body)
+            if getattr(n, 'is_Operator', False) or hasattr(n, '_func_table'):
+                stack.append(n.body)
                 stack_extend(n._func_table.values())
             elif ncls.__name__ == 'ThreadedProdder':
                 stack_extend(n.then_body)

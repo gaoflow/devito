@@ -140,8 +140,10 @@ class Graph(Byproduct):
 
         # Apply `func`
         efuncs = dict(self.efuncs)
+        originals = dict(efuncs)
         for i in dag.topological_sort():
-            efunc, metadata = func(efuncs[i], **kwargs)
+            current = efuncs[i]
+            efunc, metadata = func(current, **kwargs)
 
             self.includes.extend(as_tuple(metadata.get('includes')))
             self.headers.extend(as_tuple(metadata.get('headers')))
@@ -158,10 +160,10 @@ class Graph(Byproduct):
             except KeyError:
                 pass
 
-            if efunc is efuncs[i]:
-                continue
-
             new_efuncs = metadata.get('efuncs', [])
+
+            if efunc is current and not new_efuncs and current is originals[i]:
+                continue
 
             efuncs[i] = efunc
             efuncs.update(dict([(i.name, i) for i in new_efuncs]))
