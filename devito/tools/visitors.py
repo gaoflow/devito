@@ -6,6 +6,7 @@ __all__ = ['GenericVisitor']
 class GenericVisitor:
 
     _handler_funcs_cache = {}
+    _handlers_cache = {}
 
     """
     A generic visitor.
@@ -32,10 +33,19 @@ class GenericVisitor:
     """
 
     def __init__(self):
-        self._handlers = {}
-        self._handler_funcs = self._handler_funcs_cache.setdefault(
-            type(self), self._build_handler_funcs()
-        )
+        cls = type(self)
+
+        try:
+            self._handlers = self._handlers_cache[cls]
+        except KeyError:
+            self._handlers = {}
+            self._handlers_cache[cls] = self._handlers
+
+        try:
+            self._handler_funcs = self._handler_funcs_cache[cls]
+        except KeyError:
+            self._handler_funcs = self._build_handler_funcs()
+            self._handler_funcs_cache[cls] = self._handler_funcs
 
     @classmethod
     def _build_handler_funcs(cls):
@@ -86,19 +96,20 @@ class GenericVisitor:
         """
         cls = instance.__class__
         try:
-            return self._handlers[cls.__name__]
+            return self._handlers[cls]
         except KeyError:
+            cls_name = cls.__name__
             try:
-                entry = self._handler_funcs[cls.__name__]
+                entry = self._handler_funcs[cls_name]
             except KeyError:
                 for klass in cls.mro()[1:]:
                     entry = self._handler_funcs.get(klass.__name__)
                     if entry is not None:
-                        self._handler_funcs[cls.__name__] = entry
+                        self._handler_funcs[cls_name] = entry
                         break
                 else:
-                    raise RuntimeError("No handler found for class %s", cls.__name__)
-            self._handlers[cls.__name__] = entry
+                    raise RuntimeError("No handler found for class %s", cls_name)
+            self._handlers[cls] = entry
             return entry
 
     def visit(self, o, *args, **kwargs):
