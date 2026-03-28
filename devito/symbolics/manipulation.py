@@ -40,9 +40,6 @@ __all__ = [
     'xreplace_indices',
 ]
 
-_uxreplace_sentinel = object()
-
-
 def uxreplace(expr, rule):
     """
     An alternative to SymPy's `xreplace` for when the caller can guarantee
@@ -66,56 +63,46 @@ def uxreplace(expr, rule):
     Finally, `uxreplace` supports Reconstructable objects, that is, it searches
     for replacement opportunities inside the Reconstructable's `__rkwargs__`.
     """
-    if not rule:
-        return expr
     return _uxreplace(expr, rule)[0]
 
 
 def _uxreplace(expr, rule):
-    get = rule.get
-    sentinel = _uxreplace_sentinel
-    rkwargs = None
-
-    v = get(expr, sentinel)
-    if v is not sentinel:
+    if expr in rule:
+        v = rule[expr]
         if not isinstance(v, dict):
             return v, True
         args, eargs = split(expr.args, lambda i: i in v)
         args = [v[i] for i in args if v[i] is not None]
         changed = True
-    else:
-        cls = get(expr.__class__, sentinel)
-    if v is sentinel and cls is not sentinel:
+    elif expr.__class__ in rule:
         # Exact type -> type substitution
+        cls = rule[expr.__class__]
         expr = cls(*expr.args)
         args, eargs = [], expr.args
         changed = True
     else:
-        eargs = getattr(expr, 'args', ())
-        rkwargs = getattr(expr, '__rkwargs__', ())
-        if not eargs and not rkwargs:
-            return expr, False
-        args = []
+        try:
+            args, eargs = [], expr.args
+        except AttributeError:
+            # E.g., unsympified `int`
+            args, eargs = [], []
         changed = False
 
-    if eargs:
+    if rule:
         eargs, flag = _uxreplace_dispatch(eargs, rule)
         args.extend(eargs)
         changed |= flag
 
-    if rkwargs is None:
-        rkwargs = getattr(expr, '__rkwargs__', ())
+        # If a Reconstructable object, we need to parse the kwargs as well
+        if getattr(expr.__class__, '_uxreplace_dispatchable', False):
+            v = {i: getattr(expr, i) for i in expr.__rkwargs__}
+            kwargs, flag = _uxreplace_dispatch(v, rule)
+        else:
+            kwargs, flag = {}, False
+        changed |= flag
 
-    # If a Reconstructable object, we need to parse the kwargs as well
-    if rkwargs and getattr(expr.__class__, '_uxreplace_dispatchable', False):
-        v = {i: getattr(expr, i) for i in rkwargs}
-        kwargs, flag = _uxreplace_dispatch(v, rule)
-    else:
-        kwargs, flag = {}, False
-    changed |= flag
-
-    if changed:
-        return _uxreplace_handle(expr, args, kwargs), True
+        if changed:
+            return _uxreplace_handle(expr, args, kwargs), True
 
     return expr, False
 
@@ -135,46 +122,29 @@ def _(expr, rule):
 @_uxreplace_dispatch.register(Tuple)
 @_uxreplace_dispatch.register(list)
 def _(iterable, rule):
-    if len(iterable) == 0:
-        return iterable, False
-
-    replace = _uxreplace
-    ret = None
-    for i, a in enumerate(iterable):
-        ax, flag = replace(a, rule)
-        if flag:
-            if ret is None:
-                ret = list(iterable[:i])
-            ret.append(ax)
-        elif ret is not None:
-            ret.append(ax)
-    if ret is None:
-        return iterable, False
-    return iterable.__class__(ret), True
+    ret = []
+    changed = False
+    for a in iterable:
+        ax, flag = _uxreplace(a, rule)
+        ret.append(ax)
+        changed |= flag
+    return iterable.__class__(ret), changed
 
 
 @_uxreplace_dispatch.register(EnrichedTuple)
 def _(iterable, rule):
     retval, changed = _uxreplace_dispatch(tuple(iterable), rule)
-    if not changed:
-        return iterable, False
     return iterable.__class__(*retval, getters=iterable.getters), changed
 
 
 @_uxreplace_dispatch.register(dict)
 def _(mapper, rule):
-    if not mapper:
-        return mapper, False
-
     ret = {}
-    replace = _uxreplace_dispatch
     changed = False
     for k, v in mapper.items():
-        vx, flag = replace(v, rule)
+        vx, flag = _uxreplace_dispatch(v, rule)
         ret[k] = vx
         changed |= flag
-    if not changed:
-        return mapper, False
     return ret, changed
 
 

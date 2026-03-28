@@ -368,7 +368,7 @@ class Operator(Callable):
         # ModuloDimensions
         if not expand:
             expand = lambda d: d.is_Stepping
-        expr_workers = min(kwargs['options']['expr-workers'], len(expressions))
+        expr_workers = min(kwargs['options'].get('expr-workers', 1), len(expressions))
         eval_cache = _CompileEvalCache()
 
         def evaluate(expr):

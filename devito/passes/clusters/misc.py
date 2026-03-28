@@ -146,8 +146,7 @@ class Fusion(Queue):
 
         # Fusion
         processed = []
-        kmap = {i: self._key(i) for i in clusters}
-        for _, group in groupby(clusters, key=kmap.get):
+        for _, group in groupby(clusters, key=self._key):
             g = list(group)
 
             for maybe_fusible in self._apply_heuristics(g):
@@ -196,7 +195,6 @@ class Fusion(Queue):
 
             return obj
 
-    @memoized_meth
     def _key(self, c):
         itintervals = frozenset(c.ispace.itintervals)
         guards = c.guards if any(c.guards) else None
@@ -297,11 +295,9 @@ class Fusion(Queue):
     def _toposort(self, cgroups, prefix):
         # Are there any ClusterGroups that could potentially be topologically
         # reordered? If not, do not waste time
-        positions = {cg: i for i, cg in enumerate(cgroups)}
-        kmap = {cg: self._key(cg) for cg in cgroups}
-
-        counter = Counter(kmap[cg].strict for cg in cgroups)
-        if len(counter) == 1 or not any(v > 1 for v in counter.values()):
+        counter = Counter(self._key(cg).strict for cg in cgroups)
+        if len(counter.most_common()) == 1 or \
+           not any(v > 1 for it, v in counter.most_common()):
             return ClusterGroup(cgroups, prefix)
 
         dag = self._build_dag(cgroups, prefix)
@@ -310,8 +306,8 @@ class Fusion(Queue):
             if not scheduled:
                 return queue.pop()
 
-            k = kmap[scheduled[-1]]
-            m = {i: kmap[i] for i in queue}
+            k = self._key(scheduled[-1])
+            m = {i: self._key(i) for i in queue}
 
             # Process the `strict` part of the key
             candidates = [i for i in queue if m[i].itintervals == k.itintervals]
@@ -327,14 +323,14 @@ class Fusion(Queue):
                 choosable = [e for e in candidates if m[e].weak[:i] == k.weak[:i]]
                 try:
                     # Ensure stability
-                    e = min(choosable, key=positions.get)
+                    e = min(choosable, key=lambda i: cgroups.index(i))
                 except ValueError:
                     continue
                 queue.remove(e)
                 return e
 
             # Fallback
-            e = min(queue, key=positions.get)
+            e = min(queue, key=lambda i: cgroups.index(i))
             queue.remove(e)
             return e
 
@@ -342,7 +338,6 @@ class Fusion(Queue):
 
     def _build_dag_rows(self, rows, cgroups, scopes, prefix, barrier_count):
         may_interact = Scope.may_interact
-        fusion_hazards = Scope.fusion_hazards
 
         edges = []
 
@@ -395,14 +390,19 @@ class Fusion(Queue):
                 if not may_interact(scope0, scope1, has_barrier):
                     continue
 
-                if self.fusemode == 'derivatives':
-                    anti_prefix = bool(scope0.read_targets & scope1.write_targets)
-                    forbids_fusion = anti_prefix or bool(
-                        scope0.write_targets & (scope1.read_targets | scope1.write_targets)
-                    )
-                else:
-                    scope = make_scope(scope1, has_barrier)
-                    anti_prefix, forbids_fusion = fusion_hazards(scope, prefix)
+                # A Scope to compute all cross-ClusterGroup dependences.
+                # Reuse the cached per-ClusterGroup accesses instead of rescanning
+                # the symbolic expressions for each candidate pair.
+                scope = make_scope(scope1, has_barrier)
+                anti_prefix = any(i.cause & prefix for i in scope.d_anti_gen())
+                forbids_fusion = (
+                    anti_prefix or
+                    any(scope.d_anti_gen()) or
+                    any(i.is_iaw for i in scope.d_output_gen()) or
+                    any(not (i.cause and i.cause & prefix)
+                        for i in scope.d_flow_gen()) or
+                    any(scope.d_output_gen())
+                )
 
                 if anti_prefix:
                     edges.extend((cg2, cg1) for cg2 in cgroups[n:n1])
