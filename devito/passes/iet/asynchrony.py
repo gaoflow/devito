@@ -5,7 +5,7 @@ from functools import singledispatch
 import cgen as c
 
 from devito.ir import (
-    AsyncCall, AsyncCallable, BlankLine, Call, Callable, Conditional, DummyEq, DummyExpr,
+    AsyncCall, AsyncCallable, BlankLine, Call, Conditional, DummyEq, DummyExpr,
     EntryFunction, FindNodes, FindSymbols, Increment, Iteration, List, PointerCast,
     Return, ThreadCallable, Transformer, While, make_callable, maybe_alias
 )
@@ -205,9 +205,8 @@ def _(iet, key=None, tracker=None, sregistry=None, **kwargs):
             tbase + d, Null, Call(iet.name, [], is_indirect=True), sbase
         ))
     ])
-    body = callback(body)
-    parameters = sdata.cfields + (sdata, threads)
-    init = Callable(name, body, 'void', parameters, 'static')
+    body = List(body=callback(body))
+    init = make_callable(name, body)
 
     # Create an efunc to shutdown the pthreads
     name = sregistry.make_name(prefix='shutdown')
