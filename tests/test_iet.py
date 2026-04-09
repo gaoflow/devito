@@ -14,7 +14,8 @@ from devito.ir.iet import (
     ElementalFunction, FindSymbols, Iteration, KernelLaunch, Lambda, List, Switch,
     Transformer, filter_iterations, make_efunc, retrieve_iteration_tree
 )
-from devito.passes.iet.engine import Graph
+from devito.passes.iet import engine as iet_engine
+from devito.passes.iet.engine import Graph, iet_pass
 from devito.passes.iet.languages.C import CDataManager
 from devito.symbolics import (
     FLOAT, Byref, Class, FieldFromComposite, InlineIf, ListInitializer, Macro, SizeOf,
@@ -526,6 +527,26 @@ def test_codegen_quality0():
     assert len(foo.parameters) == 3
     assert len(foo1.parameters) == 1
     assert foo1.parameters[0] is a
+
+
+def test_iet_pass_skip_update_args(monkeypatch):
+    x = Symbol(name='x')
+    y = Symbol(name='y')
+
+    foo = Callable('foo', DummyExpr(x, y), 'void', parameters=(x, y))
+    graph = Graph(foo)
+
+    @iet_pass(updates_args=False)
+    def inject_expr(iet):
+        body = iet.body._rebuild(body=iet.body.body + (DummyExpr(x, x),))
+        return iet._rebuild(body=body), {}
+
+    monkeypatch.setattr(iet_engine, 'update_args',
+                        lambda *args, **kwargs: pytest.fail("update_args called"))
+
+    inject_expr(graph)
+
+    assert graph.root.parameters is foo.parameters
 
 
 def test_special_array_definition():
