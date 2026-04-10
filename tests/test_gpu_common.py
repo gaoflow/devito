@@ -82,6 +82,8 @@ class TestDeviceID:
     @pytest.mark.parametrize('env_variables', [{"CUDA_VISIBLE_DEVICES": "1"},
                                                {"CUDA_VISIBLE_DEVICES": "1,2"},
                                                {"CUDA_VISIBLE_DEVICES": "1,0"},
+                                               {"NVIDIA_VISIBLE_DEVICES": "1"},
+                                               {"NVIDIA_VISIBLE_DEVICES": "1,2"},
                                                {"ROCR_VISIBLE_DEVICES": "1"},
                                                {"HIP_VISIBLE_DEVICES": " 1"}])
     def test_visible_devices(self, env_variables):
@@ -108,8 +110,9 @@ class TestDeviceID:
         assert argmap2._physical_deviceid == 0
 
     @pytest.mark.parallel(mode=2)
-    @pytest.mark.parametrize('visible_devices', ["1,2", "1,0", "0,2,3"])
-    def test_visible_devices_mpi(self, visible_devices, mode):
+    @pytest.mark.parametrize('env_var', ['CUDA_VISIBLE_DEVICES', 'NVIDIA_VISIBLE_DEVICES'])
+    @pytest.mark.parametrize('visible_devices', ["1", "1,2", "1,0", "0,2,3"])
+    def test_visible_devices_mpi(self, env_var, visible_devices, mode):
         """
         Test that physical device IDs used for querying memory on a device via
         nvidia-smi correctly account for visible-device environment variables
@@ -122,11 +125,11 @@ class TestDeviceID:
 
         eq = Eq(u, u+1)
 
-        with switchenv({'CUDA_VISIBLE_DEVICES': visible_devices}):
+        with switchenv({env_var: visible_devices}):
             op1 = Operator(eq)
             argmap1 = op1.arguments()
             devices = [int(i) for i in visible_devices.split(',')]
-            assert argmap1._physical_deviceid == devices[rank]
+            assert argmap1._physical_deviceid == devices[rank % len(devices)]
 
         # In default case, physical deviceid will equal rank
         op2 = Operator(eq)
