@@ -1,4 +1,4 @@
-from functools import cached_property
+from functools import cached_property, singledispatch
 
 import numpy as np
 import sympy
@@ -12,7 +12,7 @@ from devito.ir.support import (
 from devito.symbolics import IntDiv, limits_mapper, uxreplace
 from devito.tools import Pickable, Tag, frozendict
 from devito.types import (
-    Eq, Inc, ReduceMax, ReduceMin, ReduceMinMax, SparseOpMixin, relational_min
+    Eq, Inc, ReduceMax, ReduceMin, ReduceMinMax, SparseEq, SparseOpMixin, relational_min
 )
 
 __all__ = [
@@ -25,7 +25,9 @@ __all__ = [
     'OpMax',
     'OpMin',
     'OpMinMax',
+    'clusterize_eq',
     'identity_mapper',
+    'lower_eq',
 ]
 
 
@@ -35,14 +37,6 @@ class IREq(sympy.Eq, Pickable):
     __rkwargs__ = ('ispace', 'conditionals', 'implicit_dims', 'operation')
 
     is_SparseOperation = False
-
-    def clusterize(self, **kwargs):
-        """
-        Return the ``ClusterizedEq`` counterpart for this IREq.
-        Subclasses with extra payload (e.g. ``LoweredSparseEq``)
-        override this to return their frozen counterpart.
-        """
-        return ClusterizedEq(self, **kwargs)
 
     def _hashable_content(self):
         return (*super()._hashable_content(),
@@ -296,9 +290,6 @@ class LoweredSparseEq(SparseOpMixin, LoweredEq):
 
     __rkwargs__ = LoweredEq.__rkwargs__ + ('interpolator', 'kind')
 
-    def clusterize(self, **kwargs):
-        return ClusterizedSparseEq(self, **kwargs)
-
 
 class ClusterizedEq(IREq):
 
@@ -366,9 +357,6 @@ class ClusterizedSparseEq(SparseOpMixin, ClusterizedEq):
 
     __rkwargs__ = ClusterizedEq.__rkwargs__ + ('interpolator', 'kind')
 
-    def clusterize(self, **kwargs):
-        return ClusterizedSparseEq(self, **kwargs)
-
 
 class DummyEq(ClusterizedEq):
 
@@ -389,3 +377,56 @@ class DummyEq(ClusterizedEq):
         else:
             raise ValueError(f"Cannot construct DummyEq from args={str(args)}")
         return ClusterizedEq.__new__(cls, obj, ispace=obj.ispace)
+
+
+@singledispatch
+def lower_eq(eq):
+    """
+    Promote a user-level ``Eq`` to its ``LoweredEq`` counterpart, ready
+    for the cluster pipeline. The dispatch matches the dynamic type of
+    ``eq``; ``SparseEq`` and friends get their own branch.
+    """
+    return LoweredEq(eq)
+
+
+@lower_eq.register(SparseEq)
+def _(eq):
+    # Augment ``implicit_dims`` with the SparseFunction's own iteration
+    # Dimensions (e.g. ``p_sf`` and any extra SparseFunction dims) so
+    # the cluster scheduler sees them. Grid Dimensions reached through
+    # the rhs Function are deliberately *not* added: SubDomain-derived
+    # SubDimensions would otherwise spuriously appear in the
+    # IterationSpace, and grid Dimensions are already discovered via
+    # the radius ConditionalDimensions in the rhs.
+    interp = eq.interpolator
+    sf_dims = tuple(interp.sfunction.dimensions)
+    user = tuple(eq.implicit_dims or ())
+    if interp.sfunction._sparse_position == -1:
+        augmented = sf_dims + user
+    else:
+        augmented = user + sf_dims
+
+    if augmented != tuple(eq.implicit_dims or ()):
+        eq = eq.func(eq.lhs, eq.rhs, interpolator=interp,
+                     kind=eq.kind, implicit_dims=augmented)
+
+    obj = LoweredSparseEq(eq)
+    obj._interpolator = interp
+    obj._kind = eq.kind
+    return obj
+
+
+@singledispatch
+def clusterize_eq(eq, **kwargs):
+    """
+    Freeze a ``LoweredEq`` into its ``ClusterizedEq`` counterpart,
+    suitable for use in a ``Cluster``. Subclasses with extra payload
+    (e.g. ``LoweredSparseEq``) dispatch to their frozen counterpart.
+    """
+    return ClusterizedEq(eq, **kwargs)
+
+
+@clusterize_eq.register(LoweredSparseEq)
+@clusterize_eq.register(ClusterizedSparseEq)
+def _(eq, **kwargs):
+    return ClusterizedSparseEq(eq, **kwargs)
