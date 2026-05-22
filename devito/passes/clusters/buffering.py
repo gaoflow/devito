@@ -3,7 +3,7 @@ from functools import cached_property
 from itertools import chain
 
 import numpy as np
-from sympy import S, simplify
+from sympy import Mod, S, simplify
 
 from devito.exceptions import CompilationError
 from devito.ir import (
@@ -203,7 +203,7 @@ class InjectBuffers(Queue):
                     guards = c.guards
 
                 properties = c.properties.sequentialize(d)
-                if not isinstance(d, BufferDimension):
+                if not isinstance(d, BufferDimension) and c.guards[d].has(Mod):
                     properties = properties.prefetchable(d)
                 # `c` may be a HaloTouch Cluster, so with no vision of the `bdims`
                 properties = properties.parallelize(v.bdims).affine(v.bdims)
@@ -377,7 +377,12 @@ def generate_buffers(clusters, key, sregistry, options, **kwargs):
             buffer, = buffers
             xd = buffer.indices[dim]
         else:
-            size = infer_buffer_size(f, dim, clusters)
+            if len({c.guards[dim.root] for c in clusters}) > 1:
+                # Multiple clusters with different guards,
+                # will lead to conflicts in asynchrony with multiple (modulo) slots
+                size = 1
+            else:
+                size = infer_buffer_size(f, dim, clusters)
 
             if async_degree is not None:
                 if async_degree < size:
